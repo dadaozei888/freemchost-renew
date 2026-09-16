@@ -34,25 +34,32 @@ async function sendTelegramPhoto(botToken, chatId, imagePath, caption) {
     formData.append('photo', blob, 'screenshot.png');
 
     const url = `https://api.telegram.org/bot${botToken}/sendPhoto`;
-    await fetch(url, {
-      method: 'POST',
-      body: formData
-    });
+    await fetch(url, { method: 'POST', body: formData });
     console.log('📸 TG 截图已成功推送至 Telegram！');
   } catch (err) {
     console.error('❌ TG 截图发送失败:', err.message);
   }
 }
 
-// 💥 暴力粉碎与移除 DOM 干扰弹窗 & 遮罩
+// 💥 强力粉碎与销毁 DOM 干扰弹窗（包含延迟出现的反馈弹窗）
 async function nukePopups(page) {
-  console.log('💥 正在强行摧毁 DOM 干扰弹窗与 Cookie 遮罩...');
+  console.log('💥 正在强行摧毁 DOM 干扰弹窗（反馈/社区/Cookie）...');
   await page.keyboard.press('Escape');
   await page.waitForTimeout(300);
 
   await page.evaluate(() => {
-    // 1. 强行删除包含广告/Cookie/社区提示的容器节点
+    // 1. 尝试主动点击 "Maybe later" 按钮
+    const allBtns = Array.from(document.querySelectorAll('button, div[role="button"], span, a'));
+    allBtns.forEach(btn => {
+      if (btn.textContent && btn.textContent.trim().toLowerCase() === 'maybe later') {
+        try { btn.click(); } catch(e) {}
+      }
+    });
+
+    // 2. 移除包含特定弹窗关键字的 DOM 节点
     const popupKeywords = [
+      'How would you rate FreeMCHost',
+      'Your feedback',
       'Join the FreeMCHost community',
       'We ask before we track you',
       'Got an idea to make FreeMCHost better',
@@ -63,8 +70,10 @@ async function nukePopups(page) {
     
     allEls.forEach(el => {
       const txt = el.innerText || '';
+      // 绝不误删续费弹窗
+      if (txt.includes('Keep your server online')) return;
+
       if (popupKeywords.some(kw => txt.includes(kw))) {
-        // 向上追溯到 fixed / absolute 容器或 modal dialog 根节点
         let topWrapper = el;
         while (topWrapper.parentElement && topWrapper.parentElement !== document.body) {
           const style = window.getComputedStyle(topWrapper);
@@ -79,12 +88,11 @@ async function nukePopups(page) {
       }
     });
 
-    // 2. 清理全屏灰色背景遮罩 (Backdrop)
+    // 3. 清理全屏灰色背景遮罩 Backdrop
     document.querySelectorAll('div').forEach(el => {
       const style = window.getComputedStyle(el);
-      if (style.position === 'fixed' && style.zIndex > 10) {
+      if (style.position === 'fixed' && parseInt(style.zIndex, 10) > 10) {
         const txt = el.innerText || '';
-        // 确保不会误删续费弹窗本身
         if (!txt.includes('Keep your server online')) {
           el.remove();
         }
@@ -148,43 +156,33 @@ async function nukePopups(page) {
 
     console.log('✅ 登录成功！当前 URL:', page.url());
 
-    // 1. 进入服务列表或直达服务器详情
-    console.log('📂 访问服务列表/详情主页...');
-    await page.goto('https://freemchost.com/app', { waitUntil: 'networkidle', timeout: 60000 });
-    await page.waitForTimeout(3000);
+    // 1. 直达或进入服务器详情页
+    const targetUrl = serverPageUrl || 'https://freemchost.com/app';
+    console.log(`📂 访问服务器目标页面: ${targetUrl}`);
+    await page.goto(targetUrl, { waitUntil: 'networkidle', timeout: 60000 });
+
+    // 关键点：等待 4.5 秒，让网页中延迟弹出的 Feedback 弹窗充分加载出来
+    console.log('⏳ 正在等待页面延迟弹窗渲染...');
+    await page.waitForTimeout(4500);
+
+    // 彻底清除延迟弹窗及遮罩
     await nukePopups(page);
 
-    let cardClicked = false;
-    let targetUuid = '';
-    if (serverPageUrl && serverPageUrl.includes('/servers/')) {
-      targetUuid = serverPageUrl.split('/servers/')[1].trim();
-    }
-
-    if (targetUuid) {
-      const specificLink = page.locator(`a[href*="${targetUuid}"]`).first();
-      if (await specificLink.count() > 0) {
-        console.log(`👉 点击 UUID [${targetUuid}] 卡片...`);
-        await specificLink.click();
-        cardClicked = true;
+    // 如果仍在主页，点击 UUID 卡片进详情页
+    if (page.url().endsWith('/app')) {
+      let targetUuid = '';
+      if (serverPageUrl && serverPageUrl.includes('/servers/')) {
+        targetUuid = serverPageUrl.split('/servers/')[1].trim();
+      }
+      if (targetUuid) {
+        const specificLink = page.locator(`a[href*="${targetUuid}"]`).first();
+        if (await specificLink.count() > 0) {
+          await specificLink.click();
+          await page.waitForTimeout(4000);
+          await nukePopups(page);
+        }
       }
     }
-
-    if (!cardClicked) {
-      console.log('👉 点击列表首个服务器卡片...');
-      const firstServerLink = page.locator('a[href*="/app/servers/"]').first();
-      if (await firstServerLink.count() > 0) {
-        await firstServerLink.click();
-        cardClicked = true;
-      }
-    }
-
-    if (!cardClicked && serverPageUrl) {
-      await page.goto(serverPageUrl, { waitUntil: 'networkidle', timeout: 60000 });
-    }
-
-    await page.waitForTimeout(4000);
-    // 进入详情页后，再次清洗 DOM
-    await nukePopups(page);
 
     // 2. 切入顶部 [PLAN / Billing]
     console.log('📌 点击切换至顶部 [PLAN / Billing] 选项卡...');
@@ -193,16 +191,20 @@ async function nukePopups(page) {
       await nukePopups(page);
       billingClicked = await page.evaluate(() => {
         const allEls = Array.from(document.querySelectorAll('*'));
+        // 排除侧边栏，精准查找控制台顶部的 Billing 选项卡
         const target = allEls.find(el => {
+          if (el.closest('aside') || el.closest('nav') || el.closest('[class*="sidebar"]')) return false;
           const txt = (el.textContent || '').trim();
-          return txt.includes('Billing') && txt.includes('PLAN') && txt.length < 60;
+          return txt.includes('Billing') && (txt.includes('PLAN') || txt.length < 30);
         });
+
         if (target) {
           target.click();
           return true;
         }
         return false;
       });
+
       if (billingClicked) {
         console.log('✅ 成功点击 PLAN / Billing 选项卡！');
         break;
@@ -211,7 +213,7 @@ async function nukePopups(page) {
     }
 
     if (!billingClicked) {
-      throw new Error('清理完弹窗后仍未找到 [PLAN Billing] 选项卡');
+      throw new Error('未找到 [PLAN Billing] 选项卡');
     }
 
     await page.waitForTimeout(3000);
@@ -241,7 +243,7 @@ async function nukePopups(page) {
       throw new Error('未找到 [Renew now] 按钮');
     }
 
-    // 4. 选择免费续期卡片 (60 hours / 48 hours)
+    // 4. 点击 60 hours / 48 hours 免费卡片
     console.log('📋 寻找 60 hours / 48 hours 免费卡片...');
     await page.waitForTimeout(2000);
 
