@@ -41,56 +41,37 @@ async function sendTelegramPhoto(botToken, chatId, imagePath, caption) {
   }
 }
 
-// 🛡️ 仅用于扫除进站/切页时的干扰弹窗（Feedback, Cookie, Community等）
-async function clearInitialNoisePopups(page) {
-  console.log('🧹 正在清理页面干扰弹窗（Feedback / Cookie / Community）...');
+// 🧹 专属前置清理：在点击 Renew now 之前，强行打碎所有挡路的 Modal 弹窗和黑屏遮罩
+async function nukeAllNoiseBeforeRenew(page) {
+  console.log('🧹 [Renew 前置清理] 正在移除阻挡 Renew 按钮的所有干扰弹窗与遮罩...');
   await page.keyboard.press('Escape');
   await page.waitForTimeout(200);
 
   await page.evaluate(() => {
+    // 恢复页面点击与滚动
     document.body.style.overflow = 'auto';
     document.body.style.pointerEvents = 'auto';
 
-    // 干扰弹窗特征词列表
-    const noiseKeywords = [
-      'how would you rate',
-      'your feedback',
-      'join the freemchost community',
-      'we ask before we track you',
-      'got an idea to make',
-      'cookie policy'
-    ];
-
-    const allEls = Array.from(document.querySelectorAll('div, section, aside, dialog'));
+    const allEls = Array.from(document.querySelectorAll('*'));
     allEls.forEach(el => {
+      if (['BODY', 'HTML'].includes(el.tagName) || ['root', '__next', 'app'].includes(el.id)) return;
+
+      const style = window.getComputedStyle(el);
+      const isFixed = style.position === 'fixed';
+      const isAbsolute = style.position === 'absolute';
+      const zIndex = parseInt(style.zIndex, 10) || 0;
+      const isDialog = el.getAttribute('role') === 'dialog' || el.getAttribute('aria-modal') === 'true';
+
       const txt = (el.innerText || '').toLowerCase();
-      
-      // 绝不误删正牌续费弹窗
+      // 如果已经是续费弹窗则保留（点击 Renew 按钮前一般不会存在）
       if (txt.includes('keep your server online') || txt.includes('select renewal duration')) {
         return;
       }
 
-      if (noiseKeywords.some(kw => txt.includes(kw))) {
-        let container = el;
-        while (container.parentElement && container.parentElement !== document.body) {
-          const style = window.getComputedStyle(container);
-          if (style.position === 'fixed' || style.position === 'absolute' || container.getAttribute('role') === 'dialog') {
-            break;
-          }
-          container = container.parentElement;
-        }
-        if (container && container !== document.body) {
-          container.remove();
-        }
-      }
-    });
-
-    // 清理无用背景遮罩
-    document.querySelectorAll('div').forEach(el => {
-      const style = window.getComputedStyle(el);
-      if (style.position === 'fixed' && parseInt(style.zIndex, 10) > 10) {
-        const txt = (el.innerText || '').toLowerCase();
-        if (!txt.includes('keep your server online') && !txt.includes('select renewal duration')) {
+      // 将所有固定定位或 z-index 高于常态的弹窗/遮罩彻底 remove 掉
+      if (isDialog || (isFixed && zIndex > 5) || (isAbsolute && zIndex > 50)) {
+        const rect = el.getBoundingClientRect();
+        if (isDialog || rect.width > 100 || rect.height > 100) {
           el.remove();
         }
       }
@@ -153,14 +134,14 @@ async function clearInitialNoisePopups(page) {
 
     console.log('✅ 登录成功！当前 URL:', page.url());
 
-    // 1. 直达目标页面
+    // 1. 直达服务器页面
     const targetUrl = serverPageUrl || 'https://freemchost.com/app';
     console.log(`📂 访问服务器目标页面: ${targetUrl}`);
     await page.goto(targetUrl, { waitUntil: 'networkidle', timeout: 60000 });
 
-    // 等待网页加载并清除初始干扰弹窗
-    await page.waitForTimeout(3500);
-    await clearInitialNoisePopups(page);
+    // 等待网页加载并清除初次弹窗
+    await page.waitForTimeout(3000);
+    await nukeAllNoiseBeforeRenew(page);
 
     // 2. 切入顶部 [PLAN / Billing]
     console.log('📌 点击切换至顶部 [PLAN / Billing] 选项卡...');
@@ -185,7 +166,7 @@ async function clearInitialNoisePopups(page) {
         console.log('✅ 成功点击 PLAN / Billing 选项卡！');
         break;
       }
-      await clearInitialNoisePopups(page);
+      await nukeAllNoiseBeforeRenew(page);
       await page.waitForTimeout(1500);
     }
 
@@ -193,11 +174,12 @@ async function clearInitialNoisePopups(page) {
       throw new Error('未找到 [PLAN Billing] 选项卡');
     }
 
-    // 选项卡切换后，再清一次可能新弹出的 Feedback 弹窗
-    await page.waitForTimeout(2500);
-    await clearInitialNoisePopups(page);
+    // 关键步骤：点击 Billing 后，等待 3.5 秒让 Discord 等后置弹窗充分弹出来，然后再统一粉碎掉！
+    console.log('⏳ 等待 Billing 页面加载及 Discord 等后置弹窗弹出...');
+    await page.waitForTimeout(3500);
+    await nukeAllNoiseBeforeRenew(page);
 
-    // 3. 点击红色 [Renew now] 按钮 (从此之后不再清理任何弹窗！)
+    // 3. 点击红色 [Renew now] 按钮
     console.log('🔄 寻找并点击红色 [Renew now] 按钮...');
     let renewClicked = false;
 
@@ -206,7 +188,7 @@ async function clearInitialNoisePopups(page) {
         const allBtns = Array.from(document.querySelectorAll('button, a, div[role="button"], span'));
         const target = allBtns.find(b => {
           const txt = (b.textContent || '').trim().toLowerCase();
-          return txt === 'renew now' || txt === 'renew';
+          return txt.includes('renew now');
         });
 
         if (target) {
@@ -217,9 +199,11 @@ async function clearInitialNoisePopups(page) {
       });
 
       if (renewClicked) {
-        console.log('👉 成功触发 [Renew now] 点击！');
+        console.log('👉 成功点击红色 [Renew now] 按钮！');
         break;
       }
+      // 如果还没找到，可能还有残留遮罩，再扫一次
+      await nukeAllNoiseBeforeRenew(page);
       await page.waitForTimeout(1500);
     }
 
@@ -227,11 +211,12 @@ async function clearInitialNoisePopups(page) {
       throw new Error('未找到 [Renew now] 按钮');
     }
 
-    // 4. 等待正牌续费弹窗弹出，并点击 [60 hours] 选项
-    console.log('⏳ 等待续费选择弹窗（Keep your server online）渲染...');
-    await page.waitForTimeout(3000);
+    // ⛔⚠️ 核心逻辑分水岭：点击完 Renew now 后，绝对不再调用任何清屏函数！
+    console.log('⏳ 等待正牌续费弹窗（Keep your server online）弹出...');
+    await page.waitForTimeout(3500);
 
-    console.log('📋 点击 60 hours / 48 hours 免费续期卡片...');
+    // 4. 选择 60 hours / 48 hours 免费卡片
+    console.log('📋 在续费弹窗中寻找 60 hours 免费选项...');
     const cardClicked = await page.evaluate(() => {
       const allEls = Array.from(document.querySelectorAll('*'));
       const targetText = allEls.find(el => {
@@ -258,14 +243,14 @@ async function clearInitialNoisePopups(page) {
     });
 
     if (cardClicked) {
-      console.log('👉 成功点击 60 hours 免费选项！');
+      console.log('👉 已成功点击 60 hours 免费续费卡片！');
     } else {
-      console.log('⚠️ 未在弹窗中成功定位到 60 hours 选项卡。');
+      console.log('⚠️ 未在弹窗中锁定到 60 hours 卡片，可能按钮尚未解锁或已自动选定。');
     }
 
     await page.waitForTimeout(4000);
 
-    // 5. 最终结果确认与截图推送
+    // 5. 判断最终续费状态并发送 TG 通知
     const isModalStillOpen = await page.evaluate(() => {
       return document.body.innerText.includes('Keep your server online');
     });
@@ -274,7 +259,7 @@ async function clearInitialNoisePopups(page) {
     await page.screenshot({ path: screenshotPath, fullPage: true });
 
     if (isModalStillOpen) {
-      const notReadyMsg = '⏳ Freemchost 尝试续期：由于剩余时间未少于 46 小时，免费续期按钮尚未激活。';
+      const notReadyMsg = '⏳ Freemchost 尝试续期：免费续期按钮尚未激活（需要等剩余时间小于 46 小时）。';
       console.log('⚠️ ' + notReadyMsg);
       await sendTelegramPhoto(tgToken, tgChatId, screenshotPath, notReadyMsg);
     } else {
