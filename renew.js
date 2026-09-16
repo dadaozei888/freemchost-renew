@@ -146,16 +146,21 @@ async function forceDismissPopups(page) {
     await page.waitForTimeout(3000);
     await forceDismissPopups(page);
 
-    // 2. 关键步骤：切换至 [Billing] 选项卡
-    console.log('📌 正在点击切换至 [Billing] 选项卡...');
+    // 2. 关键步骤：切换至服务器控制面板内部的 [Billing] 选项卡 (排除侧边栏全局 Billing)
+    console.log('📌 正在点击切换至服务器内部 [Billing] 选项卡...');
     let billingClicked = false;
     for (let i = 0; i < 3; i++) {
       billingClicked = await page.evaluate(() => {
         const allEls = Array.from(document.querySelectorAll('*'));
-        const target = allEls.find(el => 
-          el.children.length === 0 && 
-          el.textContent.trim().toLowerCase() === 'billing'
-        );
+        // 排除左侧 Sidebar (aside/nav) 元素，只在主视图(main/content)寻找 Billing 选项卡
+        const target = allEls.find(el => {
+          if (el.children.length !== 0) return false;
+          if (el.textContent.trim().toLowerCase() !== 'billing') return false;
+          // 过滤侧边栏菜单
+          if (el.closest('aside') || el.closest('nav') || el.closest('[class*="sidebar"]')) return false;
+          return true;
+        });
+
         if (target) {
           target.click();
           return true;
@@ -164,17 +169,17 @@ async function forceDismissPopups(page) {
       });
 
       if (billingClicked) {
-        console.log('✅ 成功切入 Billing 面板！');
+        console.log('✅ 成功切入服务器 Billing 面板！');
         break;
       }
       await page.waitForTimeout(1500);
     }
 
     if (!billingClicked) {
-      console.log('⚠️ 使用 Locator 强制切换至 [Billing]...');
-      const billingTab = page.locator('text=/Billing/i').first();
-      if (await billingTab.count() > 0) {
-        await billingTab.click({ force: true });
+      console.log('⚠️ 尝试使用 CSS 范围定位 [Billing]...');
+      const mainBillingTab = page.locator('main text=/Billing/i, div:not([class*="sidebar"]) text=/Billing/i').first();
+      if (await mainBillingTab.count() > 0) {
+        await mainBillingTab.click({ force: true });
       }
     }
 
