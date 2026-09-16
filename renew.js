@@ -41,65 +41,57 @@ async function sendTelegramPhoto(botToken, chatId, imagePath, caption) {
   }
 }
 
-// 💥 强力粉碎与销毁 DOM 干扰弹窗（包含延迟出现的反馈弹窗）
+// 💥 通用强力清屏：按 DOM 结构与层级彻底拔除所有非续费弹窗/遮罩
 async function nukePopups(page) {
-  console.log('💥 正在强行摧毁 DOM 干扰弹窗（反馈/社区/Cookie）...');
+  console.log('💥 执行通用清屏：强行清除所有 Modal 弹窗与 Backdrop 遮罩...');
   await page.keyboard.press('Escape');
-  await page.waitForTimeout(300);
+  await page.waitForTimeout(200);
 
   await page.evaluate(() => {
-    // 1. 尝试主动点击 "Maybe later" 按钮
-    const allBtns = Array.from(document.querySelectorAll('button, div[role="button"], span, a'));
-    allBtns.forEach(btn => {
-      if (btn.textContent && btn.textContent.trim().toLowerCase() === 'maybe later') {
-        try { btn.click(); } catch(e) {}
-      }
-    });
+    // 1. 恢复被弹窗锁定的网页滚动与点击交互
+    document.body.style.overflow = 'auto';
+    document.body.style.pointerEvents = 'auto';
 
-    // 2. 移除包含特定弹窗关键字的 DOM 节点
-    const popupKeywords = [
-      'How would you rate FreeMCHost',
-      'Your feedback',
-      'Join the FreeMCHost community',
-      'We ask before we track you',
-      'Got an idea to make FreeMCHost better',
-      'Cookie policy'
-    ];
-
-    const allEls = Array.from(document.querySelectorAll('div, section, aside, dialog'));
-    
+    // 2. 遍历所有元素，通过样式特征（fixed/absolute/z-index/dialog）强行拔除弹窗
+    const allEls = Array.from(document.querySelectorAll('*'));
     allEls.forEach(el => {
-      const txt = el.innerText || '';
-      // 绝不误删续费弹窗
-      if (txt.includes('Keep your server online')) return;
-
-      if (popupKeywords.some(kw => txt.includes(kw))) {
-        let topWrapper = el;
-        while (topWrapper.parentElement && topWrapper.parentElement !== document.body) {
-          const style = window.getComputedStyle(topWrapper);
-          if (style.position === 'fixed' || style.position === 'absolute' || topWrapper.getAttribute('role') === 'dialog') {
-            break;
-          }
-          topWrapper = topWrapper.parentElement;
-        }
-        if (topWrapper && topWrapper !== document.body) {
-          topWrapper.remove();
-        }
+      // 忽略根容器节点
+      if (['BODY', 'HTML'].includes(el.tagName) || ['root', '__next', 'app'].includes(el.id)) {
+        return;
       }
-    });
 
-    // 3. 清理全屏灰色背景遮罩 Backdrop
-    document.querySelectorAll('div').forEach(el => {
       const style = window.getComputedStyle(el);
-      if (style.position === 'fixed' && parseInt(style.zIndex, 10) > 10) {
-        const txt = el.innerText || '';
-        if (!txt.includes('Keep your server online')) {
+      const isFixed = style.position === 'fixed';
+      const isAbsolute = style.position === 'absolute';
+      const zIndex = parseInt(style.zIndex, 10) || 0;
+      const isDialog = el.getAttribute('role') === 'dialog' || el.getAttribute('aria-modal') === 'true';
+
+      const txt = (el.innerText || '').toLowerCase();
+      // 保护真正的续费弹窗（避免误删）
+      const isRenewalModal = txt.includes('keep your server online') || 
+                             txt.includes('select renewal duration') || 
+                             txt.includes('free renewals open');
+
+      if (isRenewalModal) return;
+
+      // 如果符合遮罩/弹窗特征，直接移除
+      if (isDialog || (isFixed && zIndex > 5) || (isAbsolute && zIndex > 100)) {
+        const rect = el.getBoundingClientRect();
+        if (isDialog || rect.width > 150 || rect.height > 150) {
           el.remove();
         }
       }
     });
+
+    // 3. 辅助逻辑：触发各类常见“Close”或“Maybe later”按钮
+    document.querySelectorAll('button, a, div[role="button"]').forEach(btn => {
+      const txt = (btn.textContent || '').trim().toLowerCase();
+      if (['maybe later', 'close', 'reject all', 'accept all', 'i need help'].includes(txt)) {
+        try { btn.click(); } catch(e) {}
+      }
+    });
   });
-  await page.waitForTimeout(500);
+  await page.waitForTimeout(300);
 }
 
 (async () => {
@@ -156,19 +148,16 @@ async function nukePopups(page) {
 
     console.log('✅ 登录成功！当前 URL:', page.url());
 
-    // 1. 直达或进入服务器详情页
+    // 1. 进入服务器页面
     const targetUrl = serverPageUrl || 'https://freemchost.com/app';
     console.log(`📂 访问服务器目标页面: ${targetUrl}`);
     await page.goto(targetUrl, { waitUntil: 'networkidle', timeout: 60000 });
 
-    // 关键点：等待 4.5 秒，让网页中延迟弹出的 Feedback 弹窗充分加载出来
-    console.log('⏳ 正在等待页面延迟弹窗渲染...');
-    await page.waitForTimeout(4500);
-
-    // 彻底清除延迟弹窗及遮罩
+    // 第一次扫清进站弹窗
+    await page.waitForTimeout(3000);
     await nukePopups(page);
 
-    // 如果仍在主页，点击 UUID 卡片进详情页
+    // 若在列表页则进入 UUID 对应服务器
     if (page.url().endsWith('/app')) {
       let targetUuid = '';
       if (serverPageUrl && serverPageUrl.includes('/servers/')) {
@@ -178,7 +167,7 @@ async function nukePopups(page) {
         const specificLink = page.locator(`a[href*="${targetUuid}"]`).first();
         if (await specificLink.count() > 0) {
           await specificLink.click();
-          await page.waitForTimeout(4000);
+          await page.waitForTimeout(3000);
           await nukePopups(page);
         }
       }
@@ -191,7 +180,6 @@ async function nukePopups(page) {
       await nukePopups(page);
       billingClicked = await page.evaluate(() => {
         const allEls = Array.from(document.querySelectorAll('*'));
-        // 排除侧边栏，精准查找控制台顶部的 Billing 选项卡
         const target = allEls.find(el => {
           if (el.closest('aside') || el.closest('nav') || el.closest('[class*="sidebar"]')) return false;
           const txt = (el.textContent || '').trim();
@@ -216,7 +204,9 @@ async function nukePopups(page) {
       throw new Error('未找到 [PLAN Billing] 选项卡');
     }
 
-    await page.waitForTimeout(3000);
+    // 等待面板内容与链式弹窗渲染，再次扫清
+    await page.waitForTimeout(3500);
+    await nukePopups(page);
 
     // 3. 点击 [Renew now]
     console.log('🔄 触发 [Renew now] 按钮...');
@@ -225,13 +215,18 @@ async function nukePopups(page) {
       await nukePopups(page);
       renewClicked = await page.evaluate(() => {
         const allBtns = Array.from(document.querySelectorAll('button, a, div[role="button"], span'));
-        const target = allBtns.find(b => b.textContent && b.textContent.trim().toLowerCase() === 'renew now');
+        const target = allBtns.find(b => {
+          const txt = (b.textContent || '').trim().toLowerCase();
+          return txt === 'renew now' || txt === 'renew';
+        });
+
         if (target) {
           target.click();
           return true;
         }
         return false;
       });
+
       if (renewClicked) {
         console.log('👉 成功触发 [Renew now] 点击！');
         break;
@@ -243,8 +238,8 @@ async function nukePopups(page) {
       throw new Error('未找到 [Renew now] 按钮');
     }
 
-    // 4. 点击 60 hours / 48 hours 免费卡片
-    console.log('📋 寻找 60 hours / 48 hours 免费卡片...');
+    // 4. 选择 60 hours / 48 hours 免费续卡
+    console.log('📋 选择免费续期卡片...');
     await page.waitForTimeout(2000);
 
     await page.evaluate(() => {
