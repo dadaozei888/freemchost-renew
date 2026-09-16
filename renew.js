@@ -153,7 +153,6 @@ async function forceDismissPopups(page) {
       await forceDismissPopups(page);
       billingClicked = await page.evaluate(() => {
         const allEls = Array.from(document.querySelectorAll('*'));
-        // 寻找包含 Billing 且包含 PLAN 的顶部选项卡元素
         const target = allEls.find(el => {
           const txt = (el.textContent || '').trim();
           return txt.includes('Billing') && txt.includes('PLAN') && txt.length < 60;
@@ -211,25 +210,33 @@ async function forceDismissPopups(page) {
       throw new Error('未能在 Billing 页面找到 [Renew now] 按钮，页面可能未完全加载。');
     }
 
-    // 4. 等待 48 hours 弹窗并点击
-    console.log('📋 正在等待 48小时 续期弹窗...');
+    // 4. 等待续期弹窗并点击 60 hours / 48 hours 免费选项
+    console.log('📋 正在等待 60小时 免费续期弹窗...');
     await page.waitForTimeout(2000);
 
-    let clicked48h = false;
-    for (let attempt = 0; attempt < 4; attempt++) {
-      clicked48h = await page.evaluate(() => {
+    let clickedFreeOption = false;
+    for (let attempt = 0; attempt < 5; attempt++) {
+      clickedFreeOption = await page.evaluate(() => {
         const allEls = Array.from(document.querySelectorAll('*'));
-        const targetText = allEls.find(el => 
-          el.children.length === 0 && 
-          el.textContent.trim().toLowerCase().includes('48 hours')
-        );
+        // 依次匹配 60 hours 或 48 hours
+        const targetText = allEls.find(el => {
+          if (el.children.length !== 0) return false;
+          const txt = el.textContent.trim().toLowerCase();
+          return txt.includes('60 hours') || txt.includes('48 hours');
+        });
 
         if (targetText) {
           let p = targetText;
+          // 向上寻找可点击的卡片容器或元素
           for (let i = 0; i < 5; i++) {
             if (p.parentElement && p.parentElement !== document.body) {
               p = p.parentElement;
-              if (p.tagName === 'BUTTON' || p.getAttribute('role') === 'button' || p.onclick) {
+              if (
+                p.tagName === 'BUTTON' || 
+                p.getAttribute('role') === 'button' || 
+                p.onclick ||
+                (p.className && typeof p.className === 'string' && (p.className.includes('card') || p.className.includes('option') || p.className.includes('border')))
+              ) {
                 p.click();
                 return true;
               }
@@ -241,25 +248,25 @@ async function forceDismissPopups(page) {
         return false;
       });
 
-      if (clicked48h) {
-        console.log('👉 成功选择 [48 hours] 选项！');
+      if (clickedFreeOption) {
+        console.log('👉 成功选择 60小时/48小时 免费续期选项！');
         break;
       }
       await page.waitForTimeout(1500);
     }
 
-    if (!clicked48h) {
-      console.log('⚠️ 尝试使用 Locator 强制点击 [48 hours]...');
-      const hours48Option = page.locator('text=/48 hours/i').first();
-      await hours48Option.waitFor({ state: 'visible', timeout: 10000 });
-      await hours48Option.click({ force: true });
+    if (!clickedFreeOption) {
+      console.log('⚠️ 尝试使用 Locator 强制点击 [60 hours / 48 hours]...');
+      const hoursOption = page.locator('text=/60 hours|48 hours/i').first();
+      await hoursOption.waitFor({ state: 'visible', timeout: 10000 });
+      await hoursOption.click({ force: true });
     }
 
     // 5. 保存截图并发送 TG 通知
     await page.waitForTimeout(5000);
     await page.screenshot({ path: 'screenshots/renew_success.png', fullPage: true });
 
-    const successMsg = '🎉 Freemchost 服务器已成功点击 48小时 续期！';
+    const successMsg = '🎉 Freemchost 服务器已成功点击 60小时 免费续期！';
     console.log('✅ ' + successMsg);
     await sendTelegramMessage(tgToken, tgChatId, successMsg);
 
