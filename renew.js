@@ -143,22 +143,20 @@ async function forceDismissPopups(page) {
     }
 
     console.log('📍 实际到达页面 URL:', page.url());
-    await page.waitForTimeout(3000);
+    await page.waitForTimeout(4000);
     await forceDismissPopups(page);
 
-    // 2. 关键步骤：切换至服务器控制面板内部的 [Billing] 选项卡 (排除侧边栏全局 Billing)
-    console.log('📌 正在点击切换至服务器内部 [Billing] 选项卡...');
+    // 2. 点击顶部 [PLAN / Billing] 选项卡
+    console.log('📌 正在点击切换至顶部 [PLAN / Billing] 选项卡...');
     let billingClicked = false;
-    for (let i = 0; i < 3; i++) {
+    for (let i = 0; i < 5; i++) {
+      await forceDismissPopups(page);
       billingClicked = await page.evaluate(() => {
         const allEls = Array.from(document.querySelectorAll('*'));
-        // 排除左侧 Sidebar (aside/nav) 元素，只在主视图(main/content)寻找 Billing 选项卡
+        // 寻找包含 Billing 且包含 PLAN 的顶部选项卡元素
         const target = allEls.find(el => {
-          if (el.children.length !== 0) return false;
-          if (el.textContent.trim().toLowerCase() !== 'billing') return false;
-          // 过滤侧边栏菜单
-          if (el.closest('aside') || el.closest('nav') || el.closest('[class*="sidebar"]')) return false;
-          return true;
+          const txt = (el.textContent || '').trim();
+          return txt.includes('Billing') && txt.includes('PLAN') && txt.length < 60;
         });
 
         if (target) {
@@ -169,23 +167,23 @@ async function forceDismissPopups(page) {
       });
 
       if (billingClicked) {
-        console.log('✅ 成功切入服务器 Billing 面板！');
+        console.log('✅ 成功切入 Billing 面板！');
         break;
       }
-      await page.waitForTimeout(1500);
+      await page.waitForTimeout(2000);
     }
 
     if (!billingClicked) {
-      console.log('⚠️ 尝试使用 CSS 范围定位 [Billing]...');
-      const mainBillingTab = page.locator('main text=/Billing/i, div:not([class*="sidebar"]) text=/Billing/i').first();
-      if (await mainBillingTab.count() > 0) {
-        await mainBillingTab.click({ force: true });
+      console.log('⚠️ 尝试备用定位器点击 [PLAN Billing]...');
+      const planBillingTab = page.locator('text=/PLAN/i').locator('..').filter({ hasText: /Billing/i }).first();
+      if (await planBillingTab.count() > 0) {
+        await planBillingTab.click({ force: true });
       }
     }
 
     await page.waitForTimeout(3000);
 
-    // 3. 寻找并触发 [Renew now] 点击
+    // 3. 触发 [Renew now] 点击
     console.log('🔄 正在触发 [Renew now] 按钮点击...');
     let renewClicked = false;
     for (let attempt = 0; attempt < 5; attempt++) {
