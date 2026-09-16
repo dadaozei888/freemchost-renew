@@ -5,22 +5,6 @@ if (!fs.existsSync('screenshots')) {
   fs.mkdirSync('screenshots');
 }
 
-// Telegram 发送文字通知
-async function sendTelegramMessage(botToken, chatId, text) {
-  if (!botToken || !chatId) return;
-  try {
-    const url = `https://api.telegram.org/bot${botToken}/sendMessage`;
-    await fetch(url, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ chat_id: chatId, text: text, parse_mode: 'HTML' })
-    });
-    console.log('📢 TG 文字通知已发送！');
-  } catch (err) {
-    console.error('❌ TG 通知发送失败:', err.message);
-  }
-}
-
 // Telegram 发送图片通知
 async function sendTelegramPhoto(botToken, chatId, imagePath, caption) {
   if (!botToken || !chatId || !fs.existsSync(imagePath)) return;
@@ -35,49 +19,51 @@ async function sendTelegramPhoto(botToken, chatId, imagePath, caption) {
 
     const url = `https://api.telegram.org/bot${botToken}/sendPhoto`;
     await fetch(url, { method: 'POST', body: formData });
-    console.log('📸 TG 截图已成功推送至 Telegram！');
+    console.log('📸 TG 状态截图已成功推送！');
   } catch (err) {
     console.error('❌ TG 截图发送失败:', err.message);
   }
 }
 
-// 🧹 专属前置清理：在点击 Renew now 之前，强行打碎所有挡路的 Modal 弹窗和黑屏遮罩
-async function nukeAllNoiseBeforeRenew(page) {
-  console.log('🧹 [Renew 前置清理] 正在移除阻挡 Renew 按钮的所有干扰弹窗与遮罩...');
-  await page.keyboard.press('Escape');
-  await page.waitForTimeout(200);
-
+// 💥 智能 DOM 精准消杀：仅清除“非续费”的随机骚扰弹窗
+async function nukeNoisePopups(page) {
   await page.evaluate(() => {
-    // 恢复页面点击与滚动
-    document.body.style.overflow = 'auto';
+    // 恢复 body 点击拦截
     document.body.style.pointerEvents = 'auto';
+    document.body.style.overflow = 'auto';
 
     const allEls = Array.from(document.querySelectorAll('*'));
     allEls.forEach(el => {
-      if (['BODY', 'HTML'].includes(el.tagName) || ['root', '__next', 'app'].includes(el.id)) return;
-
-      const style = window.getComputedStyle(el);
-      const isFixed = style.position === 'fixed';
-      const isAbsolute = style.position === 'absolute';
-      const zIndex = parseInt(style.zIndex, 10) || 0;
-      const isDialog = el.getAttribute('role') === 'dialog' || el.getAttribute('aria-modal') === 'true';
+      if (['BODY', 'HTML'].includes(el.tagName)) return;
 
       const txt = (el.innerText || '').toLowerCase();
-      // 如果已经是续费弹窗则保留（点击 Renew 按钮前一般不会存在）
-      if (txt.includes('keep your server online') || txt.includes('select renewal duration')) {
+
+      // 🛡️ 核心白名单：绝不误删正牌续费弹窗！
+      if (
+        txt.includes('keep your server online') || 
+        txt.includes('select renewal duration') ||
+        txt.includes('336 hours') ||
+        txt.includes('168 hours')
+      ) {
         return;
       }
 
-      // 将所有固定定位或 z-index 高于常态的弹窗/遮罩彻底 remove 掉
-      if (isDialog || (isFixed && zIndex > 5) || (isAbsolute && zIndex > 50)) {
+      // 识别弹窗、遮罩或 Dialog 层
+      const style = window.getComputedStyle(el);
+      const isFixed = style.position === 'fixed';
+      const isAbsolute = style.position === 'absolute' && parseInt(style.zIndex, 10) > 20;
+      const isDialog = el.getAttribute('role') === 'dialog' || el.tagName === 'DIALOG';
+
+      if (isDialog || isFixed || isAbsolute) {
         const rect = el.getBoundingClientRect();
-        if (isDialog || rect.width > 100 || rect.height > 100) {
+        // 如果占据一定面积且非主面板，直接拔除节点
+        if (rect.width > 80 && rect.height > 80 && !el.id.includes('app')) {
           el.remove();
         }
       }
     });
   });
-  await page.waitForTimeout(300);
+  await page.waitForTimeout(200);
 }
 
 (async () => {
@@ -101,7 +87,7 @@ async function nukeAllNoiseBeforeRenew(page) {
   };
 
   if (proxyUrl) {
-    console.log(`🌐 正在初始化代理网络: ${proxyUrl}`);
+    console.log(`🌐 初始化代理网络: ${proxyUrl}`);
     launchOptions.proxy = { server: proxyUrl };
   }
 
@@ -132,21 +118,19 @@ async function nukeAllNoiseBeforeRenew(page) {
       page.click('button[type="submit"]')
     ]);
 
-    console.log('✅ 登录成功！当前 URL:', page.url());
+    console.log('✅ 登录成功！');
 
-    // 1. 直达服务器页面
+    // 1. 直达目标服务器页面
     const targetUrl = serverPageUrl || 'https://freemchost.com/app';
-    console.log(`📂 访问服务器目标页面: ${targetUrl}`);
+    console.log(`📂 访问目标页面: ${targetUrl}`);
     await page.goto(targetUrl, { waitUntil: 'networkidle', timeout: 60000 });
 
-    // 等待网页加载并清除初次弹窗
-    await page.waitForTimeout(3000);
-    await nukeAllNoiseBeforeRenew(page);
-
-    // 2. 切入顶部 [PLAN / Billing]
-    console.log('📌 点击切换至顶部 [PLAN / Billing] 选项卡...');
+    // 2. 轮询寻找并点击 [PLAN / Billing] 选项卡（期间自动清扫阻挡弹窗）
+    console.log('📌 定位并点击 [PLAN / Billing] 选项卡...');
     let billingClicked = false;
-    for (let i = 0; i < 5; i++) {
+    for (let attempt = 0; attempt < 8; attempt++) {
+      await nukeNoisePopups(page);
+
       billingClicked = await page.evaluate(() => {
         const allEls = Array.from(document.querySelectorAll('*'));
         const target = allEls.find(el => {
@@ -166,7 +150,6 @@ async function nukeAllNoiseBeforeRenew(page) {
         console.log('✅ 成功点击 PLAN / Billing 选项卡！');
         break;
       }
-      await nukeAllNoiseBeforeRenew(page);
       await page.waitForTimeout(1500);
     }
 
@@ -174,21 +157,17 @@ async function nukeAllNoiseBeforeRenew(page) {
       throw new Error('未找到 [PLAN Billing] 选项卡');
     }
 
-    // 关键步骤：点击 Billing 后，等待 3.5 秒让 Discord 等后置弹窗充分弹出来，然后再统一粉碎掉！
-    console.log('⏳ 等待 Billing 页面加载及 Discord 等后置弹窗弹出...');
-    await page.waitForTimeout(3500);
-    await nukeAllNoiseBeforeRenew(page);
-
-    // 3. 点击红色 [Renew now] 按钮
+    // 3. 轮询寻找并点击红色 [Renew now] 按钮
     console.log('🔄 寻找并点击红色 [Renew now] 按钮...');
     let renewClicked = false;
+    for (let attempt = 0; attempt < 8; attempt++) {
+      await nukeNoisePopups(page);
 
-    for (let attempt = 0; attempt < 5; attempt++) {
       renewClicked = await page.evaluate(() => {
         const allBtns = Array.from(document.querySelectorAll('button, a, div[role="button"], span'));
         const target = allBtns.find(b => {
           const txt = (b.textContent || '').trim().toLowerCase();
-          return txt.includes('renew now');
+          return txt === 'renew now' || txt === 'renew';
         });
 
         if (target) {
@@ -199,11 +178,9 @@ async function nukeAllNoiseBeforeRenew(page) {
       });
 
       if (renewClicked) {
-        console.log('👉 成功点击红色 [Renew now] 按钮！');
+        console.log('👉 成功点击 [Renew now] 按钮！');
         break;
       }
-      // 如果还没找到，可能还有残留遮罩，再扫一次
-      await nukeAllNoiseBeforeRenew(page);
       await page.waitForTimeout(1500);
     }
 
@@ -211,14 +188,17 @@ async function nukeAllNoiseBeforeRenew(page) {
       throw new Error('未找到 [Renew now] 按钮');
     }
 
-    // ⛔⚠️ 核心逻辑分水岭：点击完 Renew now 后，绝对不再调用任何清屏函数！
-    console.log('⏳ 等待正牌续费弹窗（Keep your server online）弹出...');
-    await page.waitForTimeout(3500);
+    // 4. 进入正牌续费弹窗，处理 [60 hours] 选项
+    console.log('⏳ 等待续费弹窗 (Keep your server online) 渲染...');
+    await page.waitForTimeout(3000);
 
-    // 4. 选择 60 hours / 48 hours 免费卡片
-    console.log('📋 在续费弹窗中寻找 60 hours 免费选项...');
-    const cardClicked = await page.evaluate(() => {
+    console.log('📋 模拟点击 60 hours 免费续期选项...');
+    const clickResult = await page.evaluate(() => {
       const allEls = Array.from(document.querySelectorAll('*'));
+      
+      // 检查弹窗中是否带有未解锁提示
+      const isLockedTextPresent = document.body.innerText.includes('Free renewals open 46h before expiry');
+
       const targetText = allEls.find(el => {
         if (el.children.length !== 0) return false;
         const txt = el.textContent.trim().toLowerCase();
@@ -232,25 +212,19 @@ async function nukeAllNoiseBeforeRenew(page) {
             p = p.parentElement;
             if (p.tagName === 'BUTTON' || p.getAttribute('role') === 'button' || p.onclick) {
               p.click();
-              return true;
+              return { clicked: true, locked: isLockedTextPresent };
             }
           }
         }
         targetText.click();
-        return true;
+        return { clicked: true, locked: isLockedTextPresent };
       }
-      return false;
+      return { clicked: false, locked: isLockedTextPresent };
     });
 
-    if (cardClicked) {
-      console.log('👉 已成功点击 60 hours 免费续费卡片！');
-    } else {
-      console.log('⚠️ 未在弹窗中锁定到 60 hours 卡片，可能按钮尚未解锁或已自动选定。');
-    }
+    await page.waitForTimeout(3000);
 
-    await page.waitForTimeout(4000);
-
-    // 5. 判断最终续费状态并发送 TG 通知
+    // 检查续费弹窗是否依然存在
     const isModalStillOpen = await page.evaluate(() => {
       return document.body.innerText.includes('Keep your server online');
     });
@@ -258,12 +232,13 @@ async function nukeAllNoiseBeforeRenew(page) {
     const screenshotPath = 'screenshots/renew_result.png';
     await page.screenshot({ path: screenshotPath, fullPage: true });
 
-    if (isModalStillOpen) {
-      const notReadyMsg = '⏳ Freemchost 尝试续期：免费续期按钮尚未激活（需要等剩余时间小于 46 小时）。';
+    // 5. 判断续期结果并通知 Telegram
+    if (clickResult.locked || isModalStillOpen) {
+      const notReadyMsg = '⏳ Freemchost 续期未生效：免费续期（60 hours）尚未解锁（需等剩余时间小于 46 小时）。';
       console.log('⚠️ ' + notReadyMsg);
       await sendTelegramPhoto(tgToken, tgChatId, screenshotPath, notReadyMsg);
     } else {
-      const successMsg = '🎉 Freemchost 服务器已成功完成免费续期！';
+      const successMsg = '🎉 Freemchost 服务器已成功提交 60 小时免费续期！';
       console.log('✅ ' + successMsg);
       await sendTelegramPhoto(tgToken, tgChatId, screenshotPath, successMsg);
     }
