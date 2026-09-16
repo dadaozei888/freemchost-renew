@@ -21,22 +21,31 @@ async function sendTelegramMessage(botToken, chatId, text) {
   }
 }
 
-// 🛡️ 仅在有干扰弹窗出现时进行清理（点击 Maybe later / Close）
+// 🛡️ 出现弹窗时点击 [×] 或跳过/接受按钮
 async function dismissPopupsIfPresent(page) {
   try {
     await page.evaluate(() => {
-      const elements = Array.from(document.querySelectorAll('button, a, div[role="button"], span'));
-      // 找 Discord 或 Feedback 弹窗的关闭/跳过按钮
-      const dismissBtn = elements.find(el => {
-        const txt = (el.textContent || '').trim().toLowerCase();
-        return txt === 'maybe later' || txt === 'close' || txt === 'i need help';
+      // 1. 查找并点击所有弹窗右上角的 × 关闭按钮
+      const allElements = Array.from(document.querySelectorAll('button, svg, span, div, a'));
+      allElements.forEach(el => {
+        const txt = (el.textContent || '').trim();
+        const aria = (el.getAttribute('aria-label') || '').toLowerCase();
+        if (txt === '×' || txt === '✕' || txt === 'x' || aria.includes('close')) {
+          try { el.click(); } catch(e) {}
+        }
       });
-      if (dismissBtn) {
-        dismissBtn.click();
-      }
+
+      // 2. 查找并点击常用取消/接受文本按钮 (Maybe later, Accept all, Reject all)
+      const actionBtns = Array.from(document.querySelectorAll('button, a, div[role="button"], span'));
+      actionBtns.forEach(el => {
+        const txt = (el.textContent || '').trim().toLowerCase();
+        if (['maybe later', 'close', 'reject all', 'accept all'].includes(txt)) {
+          try { el.click(); } catch(e) {}
+        }
+      });
     });
   } catch (e) {
-    // 忽略错误
+    // 忽略异常
   }
   await page.waitForTimeout(500);
 }
@@ -117,28 +126,28 @@ async function dismissPopupsIfPresent(page) {
 
     // 2. 点击 [PLAN / Billing] 选项卡
     console.log('📌 正在点击 [PLAN / Billing] 选项卡...');
-    const billingTab = page.locator('text=/Billing/i').first();
+    const billingTab = page.getByText('Billing', { exact: false }).first();
     await billingTab.waitFor({ state: 'visible', timeout: 15000 });
     await billingTab.click();
     await page.waitForTimeout(1500);
 
-    // 再次检查是否有 Discord 等干扰弹窗
+    // 清理界面弹窗（关闭 Upgrade 弹窗及 Cookie 提示）
     await dismissPopupsIfPresent(page);
 
     // 3. 点击红色的 [Renew now] 按钮
     console.log('🔄 正在寻找并点击红色 [Renew now] 按钮...');
-    const renewBtn = page.locator('button:has-text("Renew now"), a:has-text("Renew now"), div[role="button"]:has-text("Renew now"), text=/Renew now/i').first();
+    const renewBtn = page.getByText('Renew now', { exact: false }).first();
     await renewBtn.waitFor({ state: 'visible', timeout: 15000 });
-    await renewBtn.click();
+    await renewBtn.click({ force: true });
     console.log('👉 已点击 [Renew now] 按钮！');
 
     await page.waitForTimeout(2000);
 
-    // 4. 在出现的续期弹窗中选择 [60 hours] 选项
+    // 4. 选择 [60 hours] 选项
     console.log('📋 正在寻找并选择 [60 hours] 续期选项...');
-    const hours60Option = page.locator('text=/60 hours/i').first();
+    const hours60Option = page.getByText('60 hours', { exact: false }).first();
     await hours60Option.waitFor({ state: 'visible', timeout: 10000 });
-    await hours60Option.click();
+    await hours60Option.click({ force: true });
     console.log('👉 已成功点击 [60 hours] 选项！');
 
     // 5. 保存截图与发送 TG 通知
