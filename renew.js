@@ -44,38 +44,80 @@ async function sendTelegramPhoto(botToken, chatId, imagePath, caption) {
   }
 }
 
-// 💥 彻底摧毁所有遮罩与“Got an idea”弹窗 DOM
-async function destroyAllModals(page) {
-  console.log('🛡️ 正在彻底粉碎所有页面遮罩与反馈弹窗...');
-  await page.keyboard.press('Escape');
-  
-  await page.evaluate(() => {
-    // 1. 查找包含 "Got an idea" 或 "Maybe later" 的固定定位容器并直接移除
-    const allEls = Array.from(document.querySelectorAll('div, section, dialog'));
-    allEls.forEach(el => {
-      const txt = (el.textContent || '').toLowerCase();
-      if (txt.includes('got an idea') || txt.includes('maybe later')) {
-        let parent = el;
-        for (let i = 0; i < 6; i++) {
-          if (parent.parentElement && parent.parentElement !== document.body) {
-            const style = window.getComputedStyle(parent);
-            if (style.position === 'fixed' || style.position === 'absolute' || parent.getAttribute('role') === 'dialog') {
-              parent.remove();
-              return;
-            }
-            parent = parent.parentElement;
-          }
-        }
-        el.remove();
-      }
-    });
+// 💥 [底层击穿引擎] 多重物理/事件强力点击
+async function penetrateClick(page, searchText, excludeSidebar = false) {
+  console.log(`⚡ [击穿模式] 正在定位并强制点击: "${searchText}"`);
 
-    // 2. 移除所有全屏半透明遮罩背景
-    const backdrops = document.querySelectorAll('[class*="backdrop"], [class*="overlay"], div[class*="fixed"][class*="inset-0"]');
-    backdrops.forEach(b => b.remove());
-  });
-  
-  await page.waitForTimeout(1000);
+  // 1. 获取物理坐标并使用浏览器底层鼠标点击 (最推荐，直接无视前端遮罩)
+  try {
+    const coords = await page.evaluate(({ text, noSidebar }) => {
+      const all = Array.from(document.querySelectorAll('*'));
+      const found = all.find(el => {
+        if (el.children.length !== 0) return false;
+        if (!el.textContent.trim().toLowerCase().includes(text.toLowerCase())) return false;
+        if (noSidebar && (el.closest('aside') || el.closest('nav'))) return false;
+        return true;
+      });
+
+      if (found) {
+        const rect = found.getBoundingClientRect();
+        if (rect.width > 0 && rect.height > 0) {
+          return { x: rect.left + rect.width / 2, y: rect.top + rect.height / 2 };
+        }
+      }
+      return null;
+    }, { text: searchText, noSidebar: excludeSidebar });
+
+    if (coords && coords.x > 0 && coords.y > 0) {
+      await page.mouse.click(coords.x, coords.y);
+      console.log(`  └─ 🎯 物理坐标击穿成功！位置: (${Math.round(coords.x)}, ${Math.round(coords.y)})`);
+      return true;
+    }
+  } catch (e) {
+    console.log(`  └─ 物理坐标获取失败: ${e.message}`);
+  }
+
+  // 2. Playwright 物理级强力点击 (force: true 直接穿透所有遮罩层)
+  try {
+    const locator = page.locator(`text=/${searchText}/i`).last();
+    if (await locator.count() > 0) {
+      await locator.click({ force: true, timeout: 3000 });
+      console.log(`  └─ 🎯 Playwright force:true 强力击穿成功！`);
+      return true;
+    }
+  } catch (e) {}
+
+  // 3. React / DOM 合成全链路事件强派 (pointerdown -> mousedown -> pointerup -> mouseup -> click)
+  try {
+    const dispatched = await page.evaluate(({ text, noSidebar }) => {
+      const all = Array.from(document.querySelectorAll('*'));
+      const found = all.find(el => {
+        if (el.children.length !== 0) return false;
+        if (!el.textContent.trim().toLowerCase().includes(text.toLowerCase())) return false;
+        if (noSidebar && (el.closest('aside') || el.closest('nav'))) return false;
+        return true;
+      });
+
+      if (!found) return false;
+
+      let curr = found;
+      for (let i = 0; i < 4; i++) {
+        if (!curr) break;
+        ['pointerdown', 'mousedown', 'pointerup', 'mouseup', 'click'].forEach(evtType => {
+          curr.dispatchEvent(new MouseEvent(evtType, { bubbles: true, cancelable: true, view: window }));
+        });
+        curr = curr.parentElement;
+      }
+      return true;
+    }, { text: searchText, noSidebar: excludeSidebar });
+
+    if (dispatched) {
+      console.log(`  └─ 🎯 DOM 全链路合成事件击穿成功！`);
+      return true;
+    }
+  } catch (e) {}
+
+  return false;
 }
 
 (async () => {
@@ -86,7 +128,7 @@ async function destroyAllModals(page) {
   const tgToken = process.env.TG_BOT_TOKEN;
   const tgChatId = process.env.TG_CHAT_ID;
 
-  console.log('🚀 正在启动伪装浏览器...');
+  console.log('🚀 启动伪装浏览器 [底层击穿模式]...');
 
   const launchOptions = {
     headless: true,
@@ -99,7 +141,7 @@ async function destroyAllModals(page) {
   };
 
   if (proxyUrl) {
-    console.log(`🌐 正在初始化代理网络: ${proxyUrl}`);
+    console.log(`🌐 初始化代理网络: ${proxyUrl}`);
     launchOptions.proxy = { server: proxyUrl };
   }
 
@@ -130,124 +172,54 @@ async function destroyAllModals(page) {
       page.click('button[type="submit"]')
     ]);
 
-    console.log('✅ 登录成功！当前 URL:', page.url());
+    console.log('✅ 登录成功！');
 
-    // 1. 直达服务器详情页
-    if (serverPageUrl) {
-      console.log('📂 直接访问服务器详情页:', serverPageUrl);
-      await page.goto(serverPageUrl, { waitUntil: 'networkidle', timeout: 60000 });
-    } else {
-      console.log('📂 访问服务列表主页...');
-      await page.goto('https://freemchost.com/app', { waitUntil: 'networkidle', timeout: 60000 });
-      await page.waitForTimeout(3000);
-      const firstServerLink = page.locator('a[href*="/app/servers/"]').first();
-      if (await firstServerLink.count() > 0) {
-        await firstServerLink.click();
-      }
-    }
-
+    // 直达或进入服务器详情页
+    const targetUrl = serverPageUrl || 'https://freemchost.com/app';
+    console.log('📂 访问目标页面:', targetUrl);
+    await page.goto(targetUrl, { waitUntil: 'networkidle', timeout: 60000 });
     await page.waitForTimeout(4000);
-    await destroyAllModals(page);
 
-    // 2. 强行点击顶部 [PLAN Billing] 选项卡并验证成功
-    console.log('📌 正在点击切换至顶部 [PLAN Billing] 选项卡...');
-    let billingClicked = false;
-    for (let i = 0; i < 5; i++) {
-      await destroyAllModals(page);
-      
-      billingClicked = await page.evaluate(() => {
-        const allEls = Array.from(document.querySelectorAll('*'));
-        // 查找包含 Billing 和 PLAN 关键字的顶部卡片
-        const target = allEls.find(el => {
-          const txt = (el.textContent || '').trim();
-          return txt.includes('Billing') && txt.includes('PLAN') && txt.length < 60;
-        });
-
-        if (target) {
-          target.click();
-          return true;
-        }
-        return false;
-      });
-
-      await page.waitForTimeout(2000);
-
-      // 验证页面是否已经包含 "Plan & lifecycle" 或 "CURRENT PLAN"
-      const onBillingPage = await page.evaluate(() => {
-        const text = document.body.innerText;
-        return text.includes('Plan & lifecycle') || text.includes('CURRENT PLAN');
-      });
-
-      if (onBillingPage) {
-        console.log('✅ 确认已成功切入 PLAN Billing 页面！');
-        billingClicked = true;
-        break;
-      }
-    }
-
-    if (!billingClicked) {
-      throw new Error('无法切入 PLAN Billing 页面，请检查页面结构或遮罩拦截。');
-    }
-
-    // 3. 寻找并点击红色 [Renew now] 按钮
-    console.log('🔄 正在寻找并点击红色 [Renew now] 按钮...');
-    let renewClicked = false;
-    for (let attempt = 0; attempt < 5; attempt++) {
-      await destroyAllModals(page);
-      
-      renewClicked = await page.evaluate(() => {
-        const allBtns = Array.from(document.querySelectorAll('button, a, div[role="button"], span'));
-        const target = allBtns.find(b => b.textContent && b.textContent.trim().toLowerCase() === 'renew now');
-        if (target) {
-          target.click();
-          return true;
-        }
-        return false;
-      });
-
-      if (renewClicked) {
-        console.log('👉 已成功点击 [Renew now] 按钮！');
-        break;
-      }
+    // 1. 底层击穿点击：切换至顶部 [Billing] 选项卡 (排除侧边栏)
+    console.log('📌 执行 [Billing] 选项卡击穿点击...');
+    let billingSuccess = false;
+    for (let i = 0; i < 3; i++) {
+      billingSuccess = await penetrateClick(page, 'Billing', true);
+      if (billingSuccess) break;
       await page.waitForTimeout(2000);
     }
 
-    if (!renewClicked) {
-      throw new Error('未能在 PLAN Billing 页面找到 [Renew now] 按钮。');
+    if (!billingSuccess) {
+      throw new Error('无法击穿点击 [Billing] 选项卡');
     }
 
-    // 4. 等待续期弹窗，点击 60 hours / 48 hours 选项
-    console.log('📋 正在等待 60/48 小时续期弹窗...');
     await page.waitForTimeout(3000);
 
-    let clickAttempted = await page.evaluate(() => {
-      const allEls = Array.from(document.querySelectorAll('*'));
-      const targetText = allEls.find(el => {
-        if (el.children.length !== 0) return false;
-        const txt = el.textContent.trim().toLowerCase();
-        return txt.includes('60 hours') || txt.includes('48 hours');
-      });
+    // 2. 底层击穿点击：[Renew now] 按钮
+    console.log('🔄 执行 [Renew now] 按钮击穿点击...');
+    let renewSuccess = false;
+    for (let i = 0; i < 3; i++) {
+      renewSuccess = await penetrateClick(page, 'Renew now');
+      if (renewSuccess) break;
+      await page.waitForTimeout(2000);
+    }
 
-      if (targetText) {
-        let p = targetText;
-        for (let i = 0; i < 5; i++) {
-          if (p.parentElement && p.parentElement !== document.body) {
-            p = p.parentElement;
-            if (p.tagName === 'BUTTON' || p.getAttribute('role') === 'button' || p.onclick) {
-              p.click();
-              return true;
-            }
-          }
-        }
-        targetText.click();
-        return true;
-      }
-      return false;
-    });
+    if (!renewSuccess) {
+      throw new Error('未找到或无法点击 [Renew now] 按钮');
+    }
+
+    await page.waitForTimeout(3000);
+
+    // 3. 底层击穿点击：[60 hours] / [48 hours] 选项
+    console.log('📋 执行 [60 hours / 48 hours] 选项击穿点击...');
+    let optionSuccess = await penetrateClick(page, '60 hours');
+    if (!optionSuccess) {
+      optionSuccess = await penetrateClick(page, '48 hours');
+    }
 
     await page.waitForTimeout(4000);
 
-    // 判断弹窗是否依然存在（未到 46 小时时点击无效，弹窗不会关闭）
+    // 验证续期弹窗状态
     const isModalStillOpen = await page.evaluate(() => {
       return document.body.innerText.includes('Keep your server online');
     });
@@ -256,11 +228,11 @@ async function destroyAllModals(page) {
     await page.screenshot({ path: screenshotPath, fullPage: true });
 
     if (isModalStillOpen) {
-      const notReadyMsg = '⏳ Freemchost 续期未成功：免费续期按钮尚未激活（需等待剩余时间小于 46 小时）。';
+      const notReadyMsg = '⏳ Freemchost 执行完成：免费续期按钮尚未激活（需等待剩余时间小于 46 小时）。';
       console.log('⚠️ ' + notReadyMsg);
       await sendTelegramPhoto(tgToken, tgChatId, screenshotPath, notReadyMsg);
     } else {
-      const successMsg = '🎉 Freemchost 服务器已成功完成免费续期！';
+      const successMsg = '🎉 Freemchost 服务器已成功击穿并完成免费续期！';
       console.log('✅ ' + successMsg);
       await sendTelegramPhoto(tgToken, tgChatId, screenshotPath, successMsg);
     }
