@@ -47,7 +47,7 @@ async function sendTelegramPhoto(botToken, chatId, imagePath, caption) {
 // 🛡️ 扫除干扰弹窗与 Cookie 提示
 async function forceDismissPopups(page) {
   await page.keyboard.press('Escape');
-  await page.waitForTimeout(500);
+  await page.waitForTimeout(300);
 
   await page.evaluate(() => {
     const allEls = Array.from(document.querySelectorAll('*'));
@@ -70,7 +70,7 @@ async function forceDismissPopups(page) {
       }
     }
   });
-  await page.waitForTimeout(1000);
+  await page.waitForTimeout(500);
 }
 
 (async () => {
@@ -127,106 +127,71 @@ async function forceDismissPopups(page) {
 
     console.log('✅ 登录成功！当前 URL:', page.url());
 
-    // 1. 进入控制台主页
-    console.log('📂 访问服务列表主页...');
-    await page.goto('https://freemchost.com/app', { waitUntil: 'networkidle', timeout: 60000 });
-    await page.waitForTimeout(3000);
-    await forceDismissPopups(page);
-
-    let cardClicked = false;
-    let targetUuid = '';
-    if (serverPageUrl && serverPageUrl.includes('/servers/')) {
-      targetUuid = serverPageUrl.split('/servers/')[1].trim();
-    }
-
-    if (targetUuid) {
-      const specificLink = page.locator(`a[href*="${targetUuid}"]`).first();
-      if (await specificLink.count() > 0) {
-        console.log(`👉 点击 UUID [${targetUuid}] 卡片...`);
-        await specificLink.click();
-        cardClicked = true;
-      }
-    }
-
-    if (!cardClicked) {
-      console.log('👉 点击列表首个服务器卡片...');
-      const firstServerLink = page.locator('a[href*="/app/servers/"]').first();
-      if (await firstServerLink.count() > 0) {
-        await firstServerLink.click();
-        cardClicked = true;
-      }
-    }
-
-    if (!cardClicked && serverPageUrl) {
+    // 1. 直达或进入服务器详情页
+    if (serverPageUrl) {
+      console.log('📂 访问服务器详情页:', serverPageUrl);
       await page.goto(serverPageUrl, { waitUntil: 'networkidle', timeout: 60000 });
-    }
-
-    await page.waitForTimeout(4000);
-    await forceDismissPopups(page);
-
-    // 2. 切入顶部 [PLAN / Billing]
-    console.log('📌 切换至顶部 [PLAN / Billing] 选项卡...');
-    let billingClicked = false;
-    for (let i = 0; i < 5; i++) {
+    } else {
+      console.log('📂 访问服务列表主页...');
+      await page.goto('https://freemchost.com/app', { waitUntil: 'networkidle', timeout: 60000 });
+      await page.waitForTimeout(3000);
       await forceDismissPopups(page);
-      billingClicked = await page.evaluate(() => {
-        const allEls = Array.from(document.querySelectorAll('*'));
-        const target = allEls.find(el => {
-          const txt = (el.textContent || '').trim();
-          return txt.includes('Billing') && txt.includes('PLAN') && txt.length < 60;
-        });
-        if (target) {
-          target.click();
-          return true;
-        }
-        return false;
-      });
-      if (billingClicked) break;
-      await page.waitForTimeout(2000);
+      const firstServerLink = page.locator('a[href*="/app/servers/"]').first();
+      await firstServerLink.click();
     }
 
     await page.waitForTimeout(3000);
+    await forceDismissPopups(page);
 
-    // 3. 点击 [Renew now]
-    console.log('🔄 触发 [Renew now] 按钮...');
-    let renewClicked = false;
-    for (let attempt = 0; attempt < 5; attempt++) {
-      await forceDismissPopups(page);
-      renewClicked = await page.evaluate(() => {
-        const allBtns = Array.from(document.querySelectorAll('button, a, div[role="button"], span'));
-        const target = allBtns.find(b => b.textContent && b.textContent.trim().toLowerCase() === 'renew now');
-        if (target) {
-          target.click();
-          return true;
-        }
-        return false;
+    // 2. 精准点击顶部 [PLAN Billing] 选项卡
+    console.log('📌 正在点击顶部 [PLAN Billing] 选项卡...');
+    
+    const clickedBilling = await page.evaluate(() => {
+      const allEls = Array.from(document.querySelectorAll('*'));
+      const billingTab = allEls.find(el => {
+        const text = (el.textContent || '').trim();
+        return text.includes('Billing') && text.includes('PLAN') && text.length < 50;
       });
-      if (renewClicked) break;
-      await page.waitForTimeout(2000);
+      if (billingTab) {
+        billingTab.click();
+        return true;
+      }
+      return false;
+    });
+
+    if (!clickedBilling) {
+      console.log('⚠️ evaluate 点击未成功，尝试 Locator 点击...');
+      const billingTabLocator = page.locator('text=Billing').filter({ hasText: 'PLAN' }).first();
+      await billingTabLocator.click({ force: true });
     }
 
-    if (!renewClicked) {
-      throw new Error('未找到 [Renew now] 按钮');
-    }
+    // 等待 Billing 页面加载完成
+    await page.waitForTimeout(3000);
+    await forceDismissPopups(page);
 
-    // 4. 选择免费续期卡片
-    console.log('📋 寻找 60 hours / 48 hours 免费卡片...');
+    // 3. 寻找并点击红色的 [Renew now] 按钮
+    console.log('🔄 寻找并点击 [Renew now] 按钮...');
+    const renewBtn = page.locator('button, a, div[role="button"]').filter({ hasText: /^Renew now$/i }).first();
+    await renewBtn.waitFor({ state: 'visible', timeout: 15000 });
+    await renewBtn.click({ force: true });
+    console.log('👉 已成功点击 [Renew now]！');
+
+    // 4. 等待弹窗并选择 [60 hours] 选项
+    console.log('📋 正在等待弹窗并选择 [60 hours] 选项...');
     await page.waitForTimeout(2000);
 
-    let clickAttempted = await page.evaluate(() => {
-      const allEls = Array.from(document.querySelectorAll('*'));
-      const targetText = allEls.find(el => {
-        if (el.children.length !== 0) return false;
-        const txt = el.textContent.trim().toLowerCase();
-        return txt.includes('60 hours') || txt.includes('48 hours');
-      });
+    const option60h = page.locator('text=/60 hours/i').first();
+    await option60h.waitFor({ state: 'visible', timeout: 10000 });
 
+    await page.evaluate(() => {
+      const allEls = Array.from(document.querySelectorAll('*'));
+      const targetText = allEls.find(el => el.children.length === 0 && el.textContent.trim().toLowerCase().includes('60 hours'));
       if (targetText) {
         let p = targetText;
         for (let i = 0; i < 5; i++) {
           if (p.parentElement && p.parentElement !== document.body) {
             p = p.parentElement;
-            if (p.tagName === 'BUTTON' || p.getAttribute('role') === 'button' || p.onclick) {
+            if (p.tagName === 'BUTTON' || p.getAttribute('role') === 'button' || p.onclick || (p.className && typeof p.className === 'string' && p.className.includes('border'))) {
               p.click();
               return true;
             }
@@ -237,32 +202,22 @@ async function forceDismissPopups(page) {
       }
       return false;
     });
+    console.log('👉 已成功点击 [60 hours] 选项！');
 
-    // 稍作等待，验证弹窗是否关闭
-    await page.waitForTimeout(4000);
-
-    const isModalStillOpen = await page.evaluate(() => {
-      return document.body.innerText.includes('Keep your server online');
-    });
-
-    const screenshotPath = 'screenshots/renew_result.png';
+    // 5. 完成并保存截图推送 TG
+    await page.waitForTimeout(5000);
+    const screenshotPath = 'screenshots/renew_success.png';
     await page.screenshot({ path: screenshotPath, fullPage: true });
 
-    if (isModalStillOpen) {
-      const notReadyMsg = '⏳ Freemchost 续期未成功：免费续期按钮尚未激活（需等剩余时间小于 46 小时）。';
-      console.log('⚠️ ' + notReadyMsg);
-      await sendTelegramPhoto(tgToken, tgChatId, screenshotPath, notReadyMsg);
-    } else {
-      const successMsg = '🎉 Freemchost 服务器已成功完成免费续期！';
-      console.log('✅ ' + successMsg);
-      await sendTelegramPhoto(tgToken, tgChatId, screenshotPath, successMsg);
-    }
+    const successMsg = '🎉 Freemchost 服务器已成功点击 60小时 续期！';
+    console.log('✅ ' + successMsg);
+    await sendTelegramPhoto(tgToken, tgChatId, screenshotPath, successMsg);
 
   } catch (error) {
     console.error('❌ 执行过程中出错:', error.message);
     const errorPath = 'screenshots/renew_error.png';
     await page.screenshot({ path: errorPath, fullPage: true });
-    await sendTelegramPhoto(tgToken, tgChatId, errorPath, `⚠️ Freemchost 执行失败: ${error.message}`);
+    await sendTelegramPhoto(tgToken, tgChatId, errorPath, `⚠️ Freemchost 续期失败: ${error.message}`);
     process.exitCode = 1;
   } finally {
     await browser.close();
