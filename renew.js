@@ -25,32 +25,30 @@ async function sendTelegramPhoto(botToken, chatId, imagePath, caption) {
   }
 }
 
-// 💥 彻底消灭 Discord 社区弹窗、Feedback 弹窗及无用遮罩
-async function nukeDiscordAndNoisePopups(page) {
-  console.log('🧹 正在清理 Discord/Community 弹窗与遮罩...');
+// 💥 专治 Discord / Feedback 骚扰弹窗与遮罩
+async function nukeDiscordAndNoise(page) {
   await page.keyboard.press('Escape');
   await page.waitForTimeout(200);
 
   await page.evaluate(() => {
-    // 恢复 body 点击与滚动
     document.body.style.pointerEvents = 'auto';
     document.body.style.overflow = 'auto';
 
-    // 1. 尝试直接点击 "Maybe later" 或关闭按钮
-    const buttons = Array.from(document.querySelectorAll('button, a, div[role="button"]'));
-    buttons.forEach(btn => {
+    // 1. 优先点击 "Maybe later" 按钮（让网站原生撕掉弹窗和遮罩）
+    const allBtns = Array.from(document.querySelectorAll('button, a, div[role="button"]'));
+    allBtns.forEach(btn => {
       const txt = (btn.textContent || '').trim().toLowerCase();
       if (txt === 'maybe later' || txt === 'close') {
-        try { btn.click(); } catch (e) {}
+        try { btn.click(); } catch(e) {}
       }
     });
 
-    // 2. 物理拔除 Discord 弹窗及非续费 Modal
+    // 2. 拔除残留的 Discord / Community 弹窗节点
     const allEls = Array.from(document.querySelectorAll('div, section, article, dialog'));
     allEls.forEach(el => {
       const txt = (el.innerText || '').toLowerCase();
 
-      // 绝不误删正牌续费弹窗
+      // 白名单：绝不误删正牌续费弹窗
       if (
         txt.includes('keep your server online') || 
         txt.includes('select renewal duration') ||
@@ -60,7 +58,6 @@ async function nukeDiscordAndNoisePopups(page) {
         return;
       }
 
-      // 如果包含 Discord 社区邀请或反馈弹窗关键字，直接销毁其最高层节点
       if (
         txt.includes('join the freemchost community') || 
         txt.includes('maybe later') ||
@@ -77,7 +74,7 @@ async function nukeDiscordAndNoisePopups(page) {
       }
     });
 
-    // 3. 强制清除遗留的高 z-index 半透明背景遮罩
+    // 3. 清理全屏灰色半透明遮罩
     document.querySelectorAll('div').forEach(div => {
       const style = window.getComputedStyle(div);
       if ((style.position === 'fixed' || style.position === 'absolute') && parseInt(style.zIndex, 10) > 5) {
@@ -145,19 +142,20 @@ async function nukeDiscordAndNoisePopups(page) {
 
     console.log('✅ 登录成功！');
 
-    // 1. 直达目标服务器页面
+    // 1. 直达目标页面
     const targetUrl = serverPageUrl || 'https://freemchost.com/app';
     console.log(`📂 访问目标页面: ${targetUrl}`);
     await page.goto(targetUrl, { waitUntil: 'networkidle', timeout: 60000 });
 
-    // 2. 尝试点击 [PLAN / Billing] 选项卡
-    console.log('📌 定位并点击 [PLAN / Billing] 选项卡...');
-    await page.waitForTimeout(2000);
-    await nukeDiscordAndNoisePopups(page);
+    // 2. 强力保证切换至 [PLAN / Billing] 选项卡
+    console.log('📌 正在尝试切换至 [PLAN / Billing] 选项卡...');
+    let isReallyOnBillingPage = false;
 
-    let billingClicked = false;
-    for (let attempt = 0; attempt < 5; attempt++) {
-      billingClicked = await page.evaluate(() => {
+    for (let attempt = 1; attempt <= 8; attempt++) {
+      await nukeDiscordAndNoise(page);
+
+      // 触发 Billing 点击
+      await page.evaluate(() => {
         const allEls = Array.from(document.querySelectorAll('*'));
         const target = allEls.find(el => {
           if (el.closest('aside') || el.closest('nav') || el.closest('[class*="sidebar"]')) return false;
@@ -166,34 +164,35 @@ async function nukeDiscordAndNoisePopups(page) {
         });
 
         if (target) {
-          target.click();
-          return true;
+          // 模拟完整的 MouseEvent 事件链以穿透单页应用 (SPA)
+          target.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true, view: window }));
         }
-        return false;
       });
 
-      if (billingClicked) {
-        console.log('✅ 成功点击 PLAN / Billing 选项卡！');
+      await page.waitForTimeout(1500);
+
+      // 严格校验是否成功切入 Billing 页面
+      isReallyOnBillingPage = await page.evaluate(() => {
+        const text = document.body.innerText;
+        return text.includes('Plan & lifecycle') || text.includes('CURRENT PLAN') || text.includes('Renew now');
+      });
+
+      if (isReallyOnBillingPage) {
+        console.log(`✅ 成功进入 Billing 页面！（尝试第 ${attempt} 次）`);
         break;
       }
-      await page.waitForTimeout(1500);
     }
 
-    if (!billingClicked) {
-      throw new Error('未找到 [PLAN Billing] 选项卡');
+    if (!isReallyOnBillingPage) {
+      throw new Error('未能成功切换至 [PLAN / Billing] 选项卡（仍在 Console 界面）');
     }
 
-    // 等待 Discord 社区弹窗彻底渲染弹出
-    console.log('⏳ 等待页面渲染并消灭 Discord/Community 后置弹窗...');
-    await page.waitForTimeout(3000);
-    await nukeDiscordAndNoisePopups(page);
-
-    // 3. 寻找并点击红色 [Renew now] 按钮
+    // 3. 在 Billing 页面彻底打扫障碍，寻找红色 [Renew now] 按钮
     console.log('🔄 寻找并点击红色 [Renew now] 按钮...');
     let renewClicked = false;
 
-    for (let attempt = 0; attempt < 5; attempt++) {
-      await nukeDiscordAndNoisePopups(page);
+    for (let attempt = 1; attempt <= 8; attempt++) {
+      await nukeDiscordAndNoise(page);
 
       renewClicked = await page.evaluate(() => {
         const allBtns = Array.from(document.querySelectorAll('button, a, div[role="button"], span'));
@@ -203,8 +202,7 @@ async function nukeDiscordAndNoisePopups(page) {
         });
 
         if (target) {
-          // 使用原生 DOM 事件触发 click，避免 Playwright 遮挡检测超时
-          target.click();
+          target.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true, view: window }));
           return true;
         }
         return false;
@@ -221,9 +219,9 @@ async function nukeDiscordAndNoisePopups(page) {
       throw new Error('未找到 [Renew now] 按钮');
     }
 
-    // 4. 进入正牌续费弹窗，处理 [60 hours] 选项
-    console.log('⏳ 等待续费选择弹窗 (Keep your server online) 渲染...');
-    await page.waitForTimeout(3500);
+    // 4. 等待正牌续费弹窗，处理 [60 hours] 选项
+    console.log('⏳ 等待续费弹窗 (Keep your server online) 渲染...');
+    await page.waitForTimeout(3000);
 
     console.log('📋 模拟点击 60 hours 免费续期选项...');
     const clickResult = await page.evaluate(() => {
@@ -256,7 +254,7 @@ async function nukeDiscordAndNoisePopups(page) {
 
     await page.waitForTimeout(3000);
 
-    // 检查续费弹窗是否依然存在
+    // 5. 结果校验与通知
     const isModalStillOpen = await page.evaluate(() => {
       return document.body.innerText.includes('Keep your server online');
     });
@@ -264,7 +262,6 @@ async function nukeDiscordAndNoisePopups(page) {
     const screenshotPath = 'screenshots/renew_result.png';
     await page.screenshot({ path: screenshotPath, fullPage: true });
 
-    // 5. 判断续期结果并通知 Telegram
     if (clickResult.locked || isModalStillOpen) {
       const notReadyMsg = '⏳ Freemchost 续期未生效：免费续期（60 hours）尚未解锁（需等剩余时间小于 46 小时）。';
       console.log('⚠️ ' + notReadyMsg);
