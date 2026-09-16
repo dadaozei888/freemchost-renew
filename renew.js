@@ -5,7 +5,7 @@ if (!fs.existsSync('screenshots')) {
   fs.mkdirSync('screenshots');
 }
 
-// Telegram 纯文本通知工具
+// Telegram 发送文字通知
 async function sendTelegramMessage(botToken, chatId, text) {
   if (!botToken || !chatId) return;
   try {
@@ -15,44 +15,66 @@ async function sendTelegramMessage(botToken, chatId, text) {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ chat_id: chatId, text: text, parse_mode: 'HTML' })
     });
-    console.log('📢 TG 文本通知已发送！');
+    console.log('📢 TG 文字通知已发送！');
   } catch (err) {
     console.error('❌ TG 通知发送失败:', err.message);
   }
 }
 
-// 🛡️ 扫除干扰弹窗（重点清理 "Maybe later" 社区弹窗与 Cookie 提示）
-async function forceDismissPopups(page) {
-  await page.keyboard.press('Escape');
-  await page.waitForTimeout(500);
-
-  await page.evaluate(() => {
-    // 强制清理各类干扰弹窗按钮
-    const allEls = Array.from(document.querySelectorAll('button, a, div[role="button"], span'));
-    const targetTexts = ['maybe later', 'i need help', 'accept all', 'accept', 'close', 'dismiss'];
+// Telegram 发送图片通知
+async function sendTelegramPhoto(botToken, chatId, imagePath, caption) {
+  if (!botToken || !chatId || !fs.existsSync(imagePath)) return;
+  try {
+    const formData = new FormData();
+    formData.append('chat_id', chatId);
+    formData.append('caption', caption);
     
+    const fileBuffer = fs.readFileSync(imagePath);
+    const blob = new Blob([fileBuffer], { type: 'image/png' });
+    formData.append('photo', blob, 'screenshot.png');
+
+    const url = `https://api.telegram.org/bot${botToken}/sendPhoto`;
+    await fetch(url, {
+      method: 'POST',
+      body: formData
+    });
+    console.log('📸 TG 截图已成功推送至 Telegram！');
+  } catch (err) {
+    console.error('❌ TG 截图发送失败:', err.message);
+  }
+}
+
+// 💥 彻底摧毁所有遮罩与“Got an idea”弹窗 DOM
+async function destroyAllModals(page) {
+  console.log('🛡️ 正在彻底粉碎所有页面遮罩与反馈弹窗...');
+  await page.keyboard.press('Escape');
+  
+  await page.evaluate(() => {
+    // 1. 查找包含 "Got an idea" 或 "Maybe later" 的固定定位容器并直接移除
+    const allEls = Array.from(document.querySelectorAll('div, section, dialog'));
     allEls.forEach(el => {
-      const txt = (el.textContent || '').trim().toLowerCase();
-      if (targetTexts.includes(txt)) {
-        el.click();
+      const txt = (el.textContent || '').toLowerCase();
+      if (txt.includes('got an idea') || txt.includes('maybe later')) {
+        let parent = el;
+        for (let i = 0; i < 6; i++) {
+          if (parent.parentElement && parent.parentElement !== document.body) {
+            const style = window.getComputedStyle(parent);
+            if (style.position === 'fixed' || style.position === 'absolute' || parent.getAttribute('role') === 'dialog') {
+              parent.remove();
+              return;
+            }
+            parent = parent.parentElement;
+          }
+        }
+        el.remove();
       }
     });
 
-    // 移除“Got an idea to make FreeMCHost better”横幅
-    const allNodes = Array.from(document.querySelectorAll('*'));
-    const ideaHeader = allNodes.find(el => el.textContent && el.textContent.includes('Got an idea to make FreeMCHost better'));
-    if (ideaHeader) {
-      let container = ideaHeader;
-      for (let i = 0; i < 5; i++) {
-        if (container.parentElement && container.parentElement !== document.body) {
-          container = container.parentElement;
-        }
-      }
-      if (container && container !== document.body) {
-        container.remove();
-      }
-    }
+    // 2. 移除所有全屏半透明遮罩背景
+    const backdrops = document.querySelectorAll('[class*="backdrop"], [class*="overlay"], div[class*="fixed"][class*="inset-0"]');
+    backdrops.forEach(b => b.remove());
   });
+  
   await page.waitForTimeout(1000);
 }
 
@@ -110,7 +132,7 @@ async function forceDismissPopups(page) {
 
     console.log('✅ 登录成功！当前 URL:', page.url());
 
-    // 1. 直达或进入服务器详情页
+    // 1. 直达服务器详情页
     if (serverPageUrl) {
       console.log('📂 直接访问服务器详情页:', serverPageUrl);
       await page.goto(serverPageUrl, { waitUntil: 'networkidle', timeout: 60000 });
@@ -118,8 +140,6 @@ async function forceDismissPopups(page) {
       console.log('📂 访问服务列表主页...');
       await page.goto('https://freemchost.com/app', { waitUntil: 'networkidle', timeout: 60000 });
       await page.waitForTimeout(3000);
-      await forceDismissPopups(page);
-
       const firstServerLink = page.locator('a[href*="/app/servers/"]').first();
       if (await firstServerLink.count() > 0) {
         await firstServerLink.click();
@@ -127,21 +147,20 @@ async function forceDismissPopups(page) {
     }
 
     await page.waitForTimeout(4000);
+    await destroyAllModals(page);
 
-    // 2. 粉碎 "Join the FreeMCHost community" 弹窗并点击 [PLAN Billing]
-    console.log('🛡️ 优先清理页面遮罩与弹窗...');
-    await forceDismissPopups(page);
-
-    console.log('📌 点击切换至顶部 [PLAN Billing] 选项卡...');
+    // 2. 强行点击顶部 [PLAN Billing] 选项卡并验证成功
+    console.log('📌 正在点击切换至顶部 [PLAN Billing] 选项卡...');
     let billingClicked = false;
     for (let i = 0; i < 5; i++) {
-      await forceDismissPopups(page);
+      await destroyAllModals(page);
+      
       billingClicked = await page.evaluate(() => {
         const allEls = Array.from(document.querySelectorAll('*'));
+        // 查找包含 Billing 和 PLAN 关键字的顶部卡片
         const target = allEls.find(el => {
-          if (el.closest('aside') || el.closest('nav')) return false; // 排除侧边栏
           const txt = (el.textContent || '').trim();
-          return txt.includes('Billing') && (txt.includes('PLAN') || txt === 'Billing') && txt.length < 50;
+          return txt.includes('Billing') && txt.includes('PLAN') && txt.length < 60;
         });
 
         if (target) {
@@ -151,27 +170,31 @@ async function forceDismissPopups(page) {
         return false;
       });
 
-      if (billingClicked) {
-        console.log('✅ 成功点击 PLAN Billing 选项卡！');
+      await page.waitForTimeout(2000);
+
+      // 验证页面是否已经包含 "Plan & lifecycle" 或 "CURRENT PLAN"
+      const onBillingPage = await page.evaluate(() => {
+        const text = document.body.innerText;
+        return text.includes('Plan & lifecycle') || text.includes('CURRENT PLAN');
+      });
+
+      if (onBillingPage) {
+        console.log('✅ 确认已成功切入 PLAN Billing 页面！');
+        billingClicked = true;
         break;
       }
-      await page.waitForTimeout(1500);
     }
 
     if (!billingClicked) {
-      console.log('⚠️ 尝试使用 Playwright Locator 强制点击 Billing...');
-      const billingTab = page.locator('main').locator('text=/Billing/i').first();
-      await billingTab.click({ force: true });
+      throw new Error('无法切入 PLAN Billing 页面，请检查页面结构或遮罩拦截。');
     }
 
-    await page.waitForTimeout(3000);
-
-    // 3. 点击红色的 [Renew now] 按钮
+    // 3. 寻找并点击红色 [Renew now] 按钮
     console.log('🔄 正在寻找并点击红色 [Renew now] 按钮...');
-    await forceDismissPopups(page);
-
     let renewClicked = false;
     for (let attempt = 0; attempt < 5; attempt++) {
+      await destroyAllModals(page);
+      
       renewClicked = await page.evaluate(() => {
         const allBtns = Array.from(document.querySelectorAll('button, a, div[role="button"], span'));
         const target = allBtns.find(b => b.textContent && b.textContent.trim().toLowerCase() === 'renew now');
@@ -190,32 +213,63 @@ async function forceDismissPopups(page) {
     }
 
     if (!renewClicked) {
-      throw new Error('未能在页面找到 [Renew now] 按钮，请确认是否已成功进入 PLAN Billing 页面。');
+      throw new Error('未能在 PLAN Billing 页面找到 [Renew now] 按钮。');
     }
 
-    // 4. 等待续期弹窗并点击 [60 hours] 选项
-    console.log('📋 正在等待弹窗并选择 [60 hours] 选项...');
-    await page.waitForTimeout(2000);
+    // 4. 等待续期弹窗，点击 60 hours / 48 hours 选项
+    console.log('📋 正在等待 60/48 小时续期弹窗...');
+    await page.waitForTimeout(3000);
 
-    const hours60Option = page.locator('text=/60 hours/i').first();
-    await hours60Option.waitFor({ state: 'visible', timeout: 10000 });
-    await hours60Option.click({ force: true });
-    console.log('👉 成功点击选择 [60 hours] 选项！');
+    let clickAttempted = await page.evaluate(() => {
+      const allEls = Array.from(document.querySelectorAll('*'));
+      const targetText = allEls.find(el => {
+        if (el.children.length !== 0) return false;
+        const txt = el.textContent.trim().toLowerCase();
+        return txt.includes('60 hours') || txt.includes('48 hours');
+      });
 
-    // 5. 等待页面响应并保存本地截图
-    await page.waitForTimeout(5000);
-    const successPath = 'screenshots/renew_success.png';
-    await page.screenshot({ path: successPath, fullPage: true });
+      if (targetText) {
+        let p = targetText;
+        for (let i = 0; i < 5; i++) {
+          if (p.parentElement && p.parentElement !== document.body) {
+            p = p.parentElement;
+            if (p.tagName === 'BUTTON' || p.getAttribute('role') === 'button' || p.onclick) {
+              p.click();
+              return true;
+            }
+          }
+        }
+        targetText.click();
+        return true;
+      }
+      return false;
+    });
 
-    const successMsg = '🎉 Freemchost 服务器自动续期流程已顺利执行完毕！截图已保存至仓库构建产物。';
-    console.log('✅ ' + successMsg);
-    await sendTelegramMessage(tgToken, tgChatId, successMsg);
+    await page.waitForTimeout(4000);
+
+    // 判断弹窗是否依然存在（未到 46 小时时点击无效，弹窗不会关闭）
+    const isModalStillOpen = await page.evaluate(() => {
+      return document.body.innerText.includes('Keep your server online');
+    });
+
+    const screenshotPath = 'screenshots/renew_result.png';
+    await page.screenshot({ path: screenshotPath, fullPage: true });
+
+    if (isModalStillOpen) {
+      const notReadyMsg = '⏳ Freemchost 续期未成功：免费续期按钮尚未激活（需等待剩余时间小于 46 小时）。';
+      console.log('⚠️ ' + notReadyMsg);
+      await sendTelegramPhoto(tgToken, tgChatId, screenshotPath, notReadyMsg);
+    } else {
+      const successMsg = '🎉 Freemchost 服务器已成功完成免费续期！';
+      console.log('✅ ' + successMsg);
+      await sendTelegramPhoto(tgToken, tgChatId, screenshotPath, successMsg);
+    }
 
   } catch (error) {
     console.error('❌ 执行过程中出错:', error.message);
     const errorPath = 'screenshots/renew_error.png';
     await page.screenshot({ path: errorPath, fullPage: true });
-    await sendTelegramMessage(tgToken, tgChatId, `⚠️ Freemchost 续期失败: ${error.message}`);
+    await sendTelegramPhoto(tgToken, tgChatId, errorPath, `⚠️ Freemchost 执行失败: ${error.message}`);
     process.exitCode = 1;
   } finally {
     await browser.close();
