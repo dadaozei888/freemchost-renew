@@ -46,20 +46,46 @@ async function dismissPopupsIfPresent(page) {
   await page.waitForTimeout(500);
 }
 
-// 🕒 获取页面上的剩余倒计时文本 (如: 03D 00H 12M)
+// 🕒 精准获取页面上的剩余倒计时 (如: 3天 0小时 12分钟)
 async function getExpiryTimeText(page) {
   try {
-    return await page.evaluate(() => {
-      const bodyText = document.body.innerText || '';
-      const match = bodyText.match(/TIME UNTIL EXPIRY[\s\S]*?(\d{2}\s*\d{2}\s*\d{2}\s*\d{2})/i);
-      if (match) {
-        const nums = match[1].split(/\s+/);
-        if (nums.length >= 2) {
-          return `${nums[0]}天 ${nums[1]}小时`;
+    const result = await page.evaluate(() => {
+      // 1. 寻找包含 TIME UNTIL EXPIRY 的最底层文本节点/元素
+      const allNodes = Array.from(document.querySelectorAll('*'));
+      const expiryHeader = allNodes.find(el => 
+        el.children.length === 0 && (el.textContent || '').toUpperCase().includes('TIME UNTIL EXPIRY')
+      );
+
+      if (expiryHeader) {
+        // 向上找父级容器（通常是整块倒计时卡片）
+        let container = expiryHeader.parentElement;
+        for (let i = 0; i < 3; i++) {
+          if (container && container.parentElement) {
+            container = container.parentElement;
+          }
+        }
+        const blockText = container ? container.innerText : '';
+        // 提取连续数字 (天 时 分 秒)
+        const nums = blockText.match(/\b\d{1,2}\b/g);
+        if (nums && nums.length >= 2) {
+          const days = parseInt(nums[0], 10);
+          const hours = parseInt(nums[1], 10);
+          const mins = nums[2] ? parseInt(nums[2], 10) : 0;
+          return `${days}天 ${hours}小时 ${mins}分钟`;
         }
       }
-      return '未知';
+
+      // 2. 全局正则保底提取
+      const fullText = document.body.innerText || '';
+      const match = fullText.match(/TIME UNTIL EXPIRY[\s\S]*?(\d{1,2})[\s\S]*?(\d{1,2})[\s\S]*?(\d{1,2})/i);
+      if (match) {
+        return `${parseInt(match[1], 10)}天 ${parseInt(match[2], 10)}小时 ${parseInt(match[3], 10)}分钟`;
+      }
+
+      return null;
     });
+
+    return result || '未知';
   } catch (e) {
     return '未知';
   }
@@ -146,10 +172,12 @@ async function getExpiryTimeText(page) {
     await billingTab.click();
     await page.waitForTimeout(1500);
 
+    // 清理界面弹窗
     await dismissPopupsIfPresent(page);
 
-    // 获取续期前的剩余时间
-    const timeBefore = await getExpiryTimeText(page);
+    // 🕒 在点击续期按钮前，优先获取背景卡片上的剩余倒计时
+    const currentExpiryTime = await getExpiryTimeText(page);
+    console.log(`📌 抓取到的当前服务器剩余时间: ${currentExpiryTime}`);
 
     // 3. 点击红色的 [Renew now] 按钮
     console.log('🔄 正在寻找并点击红色 [Renew now] 按钮...');
@@ -169,7 +197,7 @@ async function getExpiryTimeText(page) {
 
     await page.waitForTimeout(3000);
 
-    // 5. 判断是否未到续期时间（检测提示语 "46h before expiry"）
+    // 5. 判断是否未到续期时间（检测提示语 "46h before expiry" 或 "come back later"）
     const isLocked = await page.evaluate(() => {
       const txt = document.body.innerText || '';
       return txt.includes('46h before expiry') || txt.includes('come back later');
@@ -178,13 +206,14 @@ async function getExpiryTimeText(page) {
     await page.screenshot({ path: 'screenshots/renew_result.png', fullPage: true });
 
     if (isLocked) {
-      const notTimeMsg = `⏳ <b>Freemchost 尚未到续期时间</b>\n\n必须在到期前 46 小时内开放免费续期。\n📌 当前服务器剩余时间: <b>${timeBefore}</b>`;
+      const notTimeMsg = `⏳ <b>Freemchost 尚未到续期时间</b>\n\n必须在到期前 46 小时内开放免费续期。\n📌 当前服务器剩余时间: <b>${currentExpiryTime}</b>`;
       console.log('⚠️ ' + notTimeMsg.replace(/<[^>]+>/g, ''));
       await sendTelegramMessage(tgToken, tgChatId, notTimeMsg);
     } else {
-      // 成功后重新读取一次时间
-      const timeAfter = await getExpiryTimeText(page);
-      const successMsg = `🎉 <b>Freemchost 服务器已成功续期！</b>\n\n📌 续期后剩余时间: <b>${timeAfter}</b>`;
+      // 如果成功续期，重新读取一次更新后的倒计时
+      await page.waitForTimeout(2000);
+      const updatedExpiryTime = await getExpiryTimeText(page);
+      const successMsg = `🎉 <b>Freemchost 服务器已成功续期！</b>\n\n📌 续期后剩余时间: <b>${updatedExpiryTime !== '未知' ? updatedExpiryTime : currentExpiryTime}</b>`;
       console.log('✅ ' + successMsg.replace(/<[^>]+>/g, ''));
       await sendTelegramMessage(tgToken, tgChatId, successMsg);
     }
