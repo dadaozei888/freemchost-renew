@@ -46,18 +46,16 @@ async function dismissPopupsIfPresent(page) {
   await page.waitForTimeout(500);
 }
 
-// 🕒 精准绑定 D/H/M 单位提取剩余时间 (如: 02天 15小时 39分钟)
+// 🕒 精准提取剩余时间 (如: 01天 16小时 30分钟)
 async function getExpiryTimeText(page) {
   try {
     const result = await page.evaluate(() => {
-      // 1. 寻找包含 TIME UNTIL EXPIRY 的节点
       const allNodes = Array.from(document.querySelectorAll('*'));
       const expiryHeader = allNodes.find(el => 
         el.children.length === 0 && (el.textContent || '').toUpperCase().includes('TIME UNTIL EXPIRY')
       );
 
       if (expiryHeader) {
-        // 向上找到包含倒计时卡片（同时含有 D 和 H 标签）的容器
         let container = expiryHeader.parentElement;
         for (let i = 0; i < 4; i++) {
           if (container && container.innerText.includes('D') && container.innerText.includes('H')) {
@@ -70,7 +68,6 @@ async function getExpiryTimeText(page) {
 
         if (container) {
           const text = container.innerText;
-          // 精准匹配数字 + (空格/换行) + 单位字母，防止串到上面 RAM / CPU 的数字
           const daysMatch = text.match(/(\d{1,2})\s*\n?\s*D/i);
           const hoursMatch = text.match(/(\d{1,2})\s*\n?\s*H/i);
           const minsMatch = text.match(/(\d{1,2})\s*\n?\s*M/i);
@@ -83,7 +80,6 @@ async function getExpiryTimeText(page) {
           }
         }
       }
-
       return null;
     });
 
@@ -91,6 +87,17 @@ async function getExpiryTimeText(page) {
   } catch (e) {
     return '未知';
   }
+}
+
+// 🧮 将时间字符串转换为总小时数，用于严格的数学校验
+function parseTimeToHours(timeStr) {
+  if (!timeStr || timeStr === '未知') return 0;
+  let totalHours = 0;
+  const dayMatch = timeStr.match(/(\d+)\s*天/);
+  const hourMatch = timeStr.match(/(\d+)\s*小时/);
+  if (dayMatch) totalHours += parseInt(dayMatch[1], 10) * 24;
+  if (hourMatch) totalHours += parseInt(hourMatch[1], 10);
+  return totalHours;
 }
 
 (async () => {
@@ -147,7 +154,6 @@ async function getExpiryTimeText(page) {
 
     console.log('✅ 登录成功！当前 URL:', page.url());
 
-    // 1. 进入服务器页面
     if (serverPageUrl) {
       console.log('📂 正在进入指定服务器页面:', serverPageUrl);
       await page.goto(serverPageUrl, { waitUntil: 'networkidle', timeout: 60000 });
@@ -167,57 +173,71 @@ async function getExpiryTimeText(page) {
     await page.waitForTimeout(2000);
     await dismissPopupsIfPresent(page);
 
-    // 2. 点击 [PLAN / Billing] 选项卡
     console.log('📌 正在点击 [PLAN / Billing] 选项卡...');
     const billingTab = page.getByText('Billing', { exact: false }).first();
     await billingTab.waitFor({ state: 'visible', timeout: 15000 });
     await billingTab.click();
     await page.waitForTimeout(1500);
 
-    // 清理界面弹窗
     await dismissPopupsIfPresent(page);
 
-    // 🕒 精准提取背景卡片上的剩余倒计时
+    // 🕒 获取并计算续期前的时间
     const currentExpiryTime = await getExpiryTimeText(page);
-    console.log(`📌 抓取到的当前服务器剩余时间: ${currentExpiryTime}`);
+    const beforeHours = parseTimeToHours(currentExpiryTime);
+    console.log(`📌 抓取到的当前服务器剩余时间: ${currentExpiryTime} (约 ${beforeHours} 小时)`);
 
-    // 3. 点击红色的 [Renew now] 按钮
+    // 检测是否根本还没到开放续期时间
+    const isLocked = await page.evaluate(() => {
+      const txt = document.body.innerText || '';
+      return txt.includes('46h before expiry') || txt.includes('come back later');
+    });
+
+    if (isLocked) {
+      const notTimeMsg = `⏳ <b>Freemchost 尚未到续期时间</b>\n\n必须在到期前 46 小时内开放免费续期。\n📌 当前服务器剩余时间: <b>${currentExpiryTime}</b>`;
+      console.log('⚠️ ' + notTimeMsg.replace(/<[^>]+>/g, ''));
+      await sendTelegramMessage(tgToken, tgChatId, notTimeMsg);
+      await browser.close();
+      return;
+    }
+
     console.log('🔄 正在寻找并点击红色 [Renew now] 按钮...');
     const renewBtn = page.getByText('Renew now', { exact: false }).first();
     await renewBtn.waitFor({ state: 'visible', timeout: 15000 });
     await renewBtn.click({ force: true });
     console.log('👉 已点击 [Renew now] 按钮！');
 
-    await page.waitForTimeout(2000);
+    await page.waitForTimeout(3000); // 必须等待弹窗彻底加载
 
-    // 4. 选择 [60 hours] 选项
-    console.log('📋 正在寻找并选择 [60 hours] 续期选项...');
-    const hours60Option = page.getByText('60 hours', { exact: false }).first();
+    console.log('📋 正在寻找并强制点击 [60 hours] 续期选项...');
+    const hours60Option = page.locator('text=/60 hours/i').first();
     await hours60Option.waitFor({ state: 'visible', timeout: 10000 });
-    await hours60Option.click({ force: true });
-    console.log('👉 已成功点击 [60 hours] 选项！');
-
-    await page.waitForTimeout(3000);
-
-    // 5. 判断是否未到续期时间
-    const isLocked = await page.evaluate(() => {
-      const txt = document.body.innerText || '';
-      return txt.includes('46h before expiry') || txt.includes('come back later');
+    
+    // 强制使用原生 JS 向上查找到真正的 Button 进行点击，避免被透明层拦截
+    await hours60Option.evaluate(el => {
+      const btn = el.closest('button') || el.closest('div[role="button"]') || el;
+      btn.click();
     });
+    console.log('👉 已触发 [60 hours] 点击事件！');
+
+    // 等待足够长的时间让 API 请求发送且前端 DOM 刷新
+    console.log('⏳ 等待平台处理续期请求...');
+    await page.waitForTimeout(8000); 
+
+    // 🕒 重新获取并严格校验时间
+    const updatedExpiryTime = await getExpiryTimeText(page);
+    const afterHours = parseTimeToHours(updatedExpiryTime);
+    console.log(`📌 再次抓取服务器剩余时间: ${updatedExpiryTime} (约 ${afterHours} 小时)`);
 
     await page.screenshot({ path: 'screenshots/renew_result.png', fullPage: true });
 
-    if (isLocked) {
-      const notTimeMsg = `⏳ <b>Freemchost 尚未到续期时间</b>\n\n必须在到期前 46 小时内开放免费续期。\n📌 当前服务器剩余时间: <b>${currentExpiryTime}</b>`;
-      console.log('⚠️ ' + notTimeMsg.replace(/<[^>]+>/g, ''));
-      await sendTelegramMessage(tgToken, tgChatId, notTimeMsg);
-    } else {
-      await page.waitForTimeout(2000);
-      const updatedExpiryTime = await getExpiryTimeText(page);
-      const successMsg = `🎉 <b>Freemchost 服务器已成功续期！</b>\n\n📌 续期后剩余时间: <b>${updatedExpiryTime !== '未知' ? updatedExpiryTime : currentExpiryTime}</b>`;
-      console.log('✅ ' + successMsg.replace(/<[^>]+>/g, ''));
-      await sendTelegramMessage(tgToken, tgChatId, successMsg);
+    // 严格判断：如果续期后的总小时数没有增加（或者等于0），判定为失败
+    if (afterHours <= beforeHours || afterHours === 0) {
+      throw new Error(`平台未响应续期请求，剩余时间未发生改变 (仍为 ${updatedExpiryTime})。可能按钮点击未生效或存在风控。`);
     }
+
+    const successMsg = `🎉 <b>Freemchost 服务器已成功续期！</b>\n\n📌 续期后剩余时间: <b>${updatedExpiryTime}</b>`;
+    console.log('✅ ' + successMsg.replace(/<[^>]+>/g, ''));
+    await sendTelegramMessage(tgToken, tgChatId, successMsg);
 
   } catch (error) {
     console.error('❌ 执行过程中出错:', error.message);
