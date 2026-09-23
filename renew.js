@@ -238,6 +238,25 @@ async function safeScreenshot(page, filePath) {
   });
 
   const page = await context.newPage();
+
+  // 📡 全量拦截并打印除静态资源外的所有网络请求，观察真实 API 端点
+  page.on('request', req => {
+    const url = req.url();
+    const type = req.resourceType();
+    if (['xhr', 'fetch'].includes(type) && !url.includes('google') && !url.includes('analytics')) {
+      console.log(`📤 发起网络请求: [${req.method()}] ${url.substring(0, 100)}`);
+    }
+  });
+
+  page.on('response', res => {
+    const req = res.request();
+    const url = res.url();
+    const type = req.resourceType();
+    if (['xhr', 'fetch'].includes(type) && !url.includes('google') && !url.includes('analytics')) {
+      console.log(`📥 收到网络响应: [${res.status()}] ${url.substring(0, 100)}`);
+    }
+  });
+
   let reports = [];
 
   try {
@@ -292,7 +311,7 @@ async function safeScreenshot(page, filePath) {
           await page.waitForTimeout(1500);
           await forceDismissPopups(page);
 
-          console.log('⏳ 正在等待 [60 hours] 选项从置灰变为可点击状态...');
+          console.log('⏳ 等待 [60 hours] 选项解锁 (等待 3-5 秒后端校验)...');
           const renewModal = page.locator('div').filter({ hasText: 'Keep your server online' }).last();
           await renewModal.waitFor({ state: 'visible', timeout: 10000 });
 
@@ -309,42 +328,71 @@ async function safeScreenshot(page, filePath) {
             await page.waitForTimeout(1200);
           }
 
-          console.log('👉 正在发起续期网络请求并点击 [60 hours]...');
+          console.log('👉 执行【高精度多层真实事件穿透点击】...');
 
-          const cardContainer = page.locator('div, button').filter({ hasText: '60 hours' }).filter({ hasText: 'Discord Boosted' }).last();
-          await cardContainer.waitFor({ state: 'visible', timeout: 5000 });
-          await cardContainer.scrollIntoViewIfNeeded();
+          // 核心加固：直接在浏览器内部定位包含 60 hours 的卡片，并派发全套鼠标/指针事件链
+          const clickedTarget = await page.evaluate(() => {
+            const allEls = Array.from(document.querySelectorAll('*'));
+            const textEl = allEls.find(el => 
+              el.children.length === 0 && 
+              el.textContent.trim().toLowerCase().includes('60 hours')
+            );
+            if (!textEl) return '未找到文本节点';
 
-          // 核心加固：前置布设网络响应监听器，确保等待真实的 API 返回
-          const apiResponsePromise = page.waitForResponse(response => {
-            const req = response.request();
-            const url = response.url();
-            return req.method() === 'POST' && (url.includes('/renew') || url.includes('/extend') || url.includes('/server'));
-          }, { timeout: 15000 }).catch(() => null);
+            // 寻找带有边框或卡片样式的交互祖先
+            let card = textEl;
+            for (let j = 0; j < 6; j++) {
+              if (card.parentElement && card.parentElement !== document.body) {
+                const cls = (card.parentElement.className || '').toString();
+                if (cls.includes('rounded') || cls.includes('border') || card.parentElement.tagName === 'BUTTON') {
+                  card = card.parentElement;
+                  break;
+                }
+                card = card.parentElement;
+              }
+            }
 
-          // 触发真实物理点击
-          const box = await cardContainer.boundingBox();
-          if (box) {
-            await page.mouse.click(box.x + box.width / 2, box.y + box.height / 2);
-          } else {
-            await cardContainer.click();
-          }
+            // 完整派发 pointerdown -> mousedown -> focus -> mouseup -> click
+            const rect = card.getBoundingClientRect();
+            const clientX = rect.left + rect.width / 2;
+            const clientY = rect.top + rect.height / 2;
 
-          // 等待网络请求响应
-          const interceptedRes = await apiResponsePromise;
-          if (interceptedRes) {
-            console.log(`📡 捕获到后端核心响应: ${interceptedRes.url()} -> HTTP ${interceptedRes.status()}`);
-            const resBody = await interceptedRes.text().catch(() => '');
-            console.log(`📦 响应内容摘要: ${resBody.substring(0, 150)}`);
-          } else {
-            console.log('⚠️ 15秒内未拦截到明确命名的 POST 接口，可能由内联 WebSocket 或非标准接口处理，继续执行硬核验...');
-          }
+            const opts = { bubbles: true, cancelable: true, view: window, clientX, clientY };
+            card.dispatchEvent(new PointerEvent('pointerdown', opts));
+            card.dispatchEvent(new MouseEvent('mousedown', opts));
+            card.focus();
+            card.dispatchEvent(new PointerEvent('pointerup', opts));
+            card.dispatchEvent(new MouseEvent('mouseup', opts));
+            card.dispatchEvent(new MouseEvent('click', opts));
 
-          // 等待后端写入完成
-          await page.waitForTimeout(6000);
+            // 如果内部有真正的 button 或 radio input，也顺带触发一次
+            const innerBtn = card.querySelector('button, input');
+            if (innerBtn) {
+              innerBtn.click();
+            }
+
+            return `已触发卡片标签: <${card.tagName.toLowerCase()}> 类名: ${card.className.substring(0, 50)}`;
+          });
+
+          console.log(`🖱️ 穿透结果: ${clickedTarget}`);
+
+          // 辅以 Playwright 原生物理鼠标点击（双保险）
+          try {
+            const locatorCard = renewModal.locator('div, button').filter({ hasText: /60\s*hours/i }).last();
+            if (await locatorCard.isVisible()) {
+              await locatorCard.click({ force: true, delay: 100 });
+              console.log('🖱️ 原生 locator.click 派发成功！');
+            }
+          } catch (e) {}
+
+          // 等待接口交互与入库
+          console.log('⏳ 等待服务端完成网络通信与入账 (10 秒)...');
+          await page.waitForTimeout(10000);
+
+          // 关掉可能随后弹出的 Discord 推广弹窗
           await forceDismissPopups(page);
 
-          // 核心硬核验：打开一个全新无缓存的标签页，从头访问该服务器
+          // 核心硬核验：打开全新无缓存页面进行数据库落地确认
           console.log('🔍 正在启动跨上下文硬核验，核查真实入库倒计时...');
           const verifyPage = await context.newPage();
           await verifyPage.goto(currentUrl, { waitUntil: 'networkidle', timeout: 60000 });
@@ -364,13 +412,13 @@ async function safeScreenshot(page, filePath) {
 
           console.log(`⏱️ 全新页面核验结果: 前序 ${remainHours.toFixed(1)}h ➔ 真实数据库时间: ${finalHours.toFixed(1)}h (${finalStr})`);
 
-          // 只有真实数据增加了 20 小时以上才算续期入库
+          // 只有真实数据增加了 20 小时以上才算入库
           if (finalHours > remainHours + 20) {
             console.log('🎉 验证通过：后端数据库已落盘！');
             reports.push(`🟢 <b>服务器 ${sIndex}</b>: 成功满血续期 (+60h)\n     └ 状态: ${remainStr} ➔ <b>${finalStr}</b>`);
           } else {
-            console.error('❌ 验证失败：后端数据未真正更新（可能遇到 Discord 鉴权拦截或接口拒绝）！');
-            reports.push(`🔴 <b>服务器 ${sIndex}</b>: 续期指令下发但后端未入账 (当前: ${finalStr})\n     └ 原因: Discord 授权异常或后端回滚，请检查网页绑定`);
+            console.error('❌ 验证失败：后端数据未真正更新！');
+            reports.push(`🔴 <b>服务器 ${sIndex}</b>: 续期指令下发但后端未入账 (当前: ${finalStr})\n     └ 机制: 下个 12h 周期将自动重试`);
           }
 
         } else {
