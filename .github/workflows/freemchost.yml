@@ -27,6 +27,7 @@ jobs:
         with:
           token: ${{ secrets.GITHUB_TOKEN }}
           persist-credentials: true
+          fetch-depth: 0 # 完整历史，否则 fetch / reset 到远程最新版不可靠
 
       - name: 设置 Node.js 环境
         uses: actions/setup-node@v4
@@ -77,13 +78,29 @@ jobs:
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
-          echo "$(TZ=Asia/Shanghai date +'%Y-%m-%d %H:%M:%S')" > time.txt
-          git add time.txt
-          if git diff --cached --quiet; then
-            echo "No need to commit"
-          else
+          pushed=false
+          for attempt in 1 2 3; do
+            # 先同步到远程最新版，再重新生成时间戳，永远不拿旧版本去推
+            git fetch origin main
+            git reset --hard origin/main
+            echo "$(TZ=Asia/Shanghai date +'%Y-%m-%d %H:%M:%S')" > time.txt
+            git add time.txt
+            if git diff --cached --quiet; then
+              echo "No need to commit"
+              pushed=true
+              break
+            fi
             git commit -m "⏱️ Auto Update by Github Actions $(TZ=Asia/Shanghai date +'%Y-%m-%d %H:%M:%S')"
-            git push origin main
+            if git push origin main; then
+              pushed=true
+              break
+            fi
+            echo "Push rejected on attempt $attempt, retrying with latest remote..."
+            sleep 10
+          done
+          if [ "$pushed" = false ]; then
+            echo "Push failed after 3 attempts"
+            exit 1
           fi
 
       - name: 🧹 清理旧的工作流运行记录
